@@ -1,5 +1,10 @@
 # 期末星图 · Finale Agent
 
+[![CI](https://github.com/BobSong-dev/finale-revision-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/BobSong-dev/finale-revision-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Next.js](https://img.shields.io/badge/Next.js-16.3.0-black.svg)](https://nextjs.org/)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)](https://nodejs.org/)
+
 面向大学生的中文复习工作区：把课程资料保存在自己控制的数据目录中，用真实 AI 提取可追溯考点、生成练习、记录掌握度并重排复习计划。
 
 当前发行版是**可上线的单工作区 self-hosted 应用**。它不依赖演示种子数据，真实主链路为：
