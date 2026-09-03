@@ -1,0 +1,16 @@
+node_modules/
+.next/
+coverage/
+data/
+.audit-workspace-data/
+.tmp-e2e-chrome-cdp/
+.tmp-e2e-chrome-dump/
+.e2e-final-*/
+.firecrawl/
+.ui-browser-regression-data/
+.env*
+!.env.example
+*.tsbuildinfo
+
+# 无关的本地克隆（第三方项目 Spider_XHS），不属于本仓库
+xhs/

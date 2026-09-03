@@ -1,0 +1,54 @@
+services:
+  # Docker named volumes are commonly created as root-owned. This one-shot
+  # initializer scopes the ownership change to the dedicated data volume; the
+  # application container itself still runs as the unprivileged `finale` user.
+  # Backup/restore commands also run this service through `docker compose run`
+  # so Compose resolves the real project-scoped volume name automatically.
+  init-data:
+    image: alpine:3.21
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /data && chown -R 1001:1001 /data"]
+    volumes:
+      - finale-data:/data
+    restart: "no"
+
+  finale-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finale-revision-agent:local
+    init: true
+    restart: unless-stopped
+    depends_on:
+      init-data:
+        condition: service_completed_successfully
+    ports:
+      # Loopback is the safe default because this single-user runtime has no
+      # authentication. Put an HTTPS reverse proxy in front before changing it.
+      - "${FINALE_BIND_HOST:-127.0.0.1}:${PORT:-3000}:3000"
+    environment:
+      FINALE_DATA_DIR: /app/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      AI_ALLOW_UNAUTHENTICATED_SERVER_KEY: ${AI_ALLOW_UNAUTHENTICATED_SERVER_KEY:-false}
+      AI_ALLOW_CUSTOM_BASE_URL: ${AI_ALLOW_CUSTOM_BASE_URL:-false}
+      FINALE_ALLOWED_ORIGINS: ${FINALE_ALLOWED_ORIGINS:-}
+      FINALE_TRUST_PROXY: ${FINALE_TRUST_PROXY:-false}
+      EMAIL_PROVIDER_URL: ${EMAIL_PROVIDER_URL:-}
+      EMAIL_PROVIDER_TOKEN: ${EMAIL_PROVIDER_TOKEN:-}
+      AUTH_OTP_SECRET: ${AUTH_OTP_SECRET:-}
+      SCHOOL_EMAIL_DOMAINS: ${SCHOOL_EMAIL_DOMAINS:-}
+      COMMUNITY_ADMIN_TOKEN: ${COMMUNITY_ADMIN_TOKEN:-}
+      FINALE_RATE_LIMIT_DISABLED: ${FINALE_RATE_LIMIT_DISABLED:-false}
+    volumes:
+      - finale-data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+
+volumes:
+  finale-data:
