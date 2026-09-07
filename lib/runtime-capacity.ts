@@ -32,6 +32,19 @@ export function acquireHeavyRequestSlot(): () => void {
   };
 }
 
+/** 后台分析排队等待槽位；超时仍抛出 SERVER_BUSY。 */
+export async function waitForHeavyRequestSlot(timeoutMs = 180_000): Promise<() => void> {
+  const started = Date.now();
+  while (true) {
+    try {
+      return acquireHeavyRequestSlot();
+    } catch (error) {
+      if (!(error instanceof RuntimeCapacityError) || Date.now() - started >= timeoutMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
 export class RuntimeCapacityError extends Error {
   constructor(message: string, readonly retryAfterSeconds: number) {
     super(message);

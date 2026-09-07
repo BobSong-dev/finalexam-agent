@@ -21,6 +21,10 @@ export interface DocumentKeyPoint {
   title: string;
   importance: number;
   evidence: EvidenceReference;
+  /** 该考点常见失分点，可空。 */
+  pitfalls?: string;
+  /** 资料内期末相关程度 1–5，不是跨年频率。 */
+  examLikelihood?: number;
 }
 
 export interface DocumentQuestionPattern {
@@ -39,6 +43,8 @@ export interface GeneratedPracticeQuestion {
   explanation: string;
   knowledge: string;
   sourceLocation: string;
+  difficulty?: number;
+  pitfalls?: string;
 }
 
 export interface DocumentAnalysis {
@@ -77,6 +83,23 @@ export interface CourseContext {
   code: string;
   teacher: string;
   term: string;
+  examDate?: string;
+  priority?: string;
+}
+
+export interface AiTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+}
+
+export interface ProcessingJob {
+  id: string;
+  type: "analyze" | "synthesize" | "plan";
+  targetId: string;
+  stage: "queued" | "extracting" | "calling-model" | "saving";
+  startedAt: string;
+  updatedAt: string;
 }
 
 export interface AiStatus {
@@ -96,7 +119,9 @@ export interface AiPlanCourse {
   priority: string;
   mastery: number;
   /** Evidence-backed focus candidates for this course, highest frequency first. */
-  insights: Array<{ title: string; frequency: number; trend: string }>;
+  insights: Array<{ title: string; frequency: number; importance: number; trend: string }>;
+  /** Wrong topics from the last seven days that must resurface as 回顾. */
+  recentMisses: Array<{ topic: string; missedOn: string }>;
 }
 
 /** One task the model proposes; the server maps, clamps and persists it. */

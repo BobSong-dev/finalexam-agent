@@ -284,7 +284,8 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     assert.equal(analysisPayload.analysis.keyPoints[0]?.title, "二重积分的区域变换");
     assert.equal(analysisPayload.workspace.materials.find((material) => material.id === materialId)?.status, "已分析");
     assert.equal(analysisPayload.workspace.insights.some((item) => item.title === "二重积分的区域变换"), true);
-    assert.equal(analysisPayload.workspace.questions.some((item) => item.answer === "A"), true);
+    assert.equal(analysisPayload.analysis.generatedQuestions.some((item) => item.answer === "A"), true);
+    assert.equal(analysisPayload.workspace.questions.every((item) => !("answer" in item)), true);
     assertNoPrivateStorageFields(analysisPayload);
 
     const synthesisResponse = await synthesizeCourse(
@@ -301,7 +302,8 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     assert.ok(synthesisPayload.workspace.tasks[0]?.id, "course synthesis should leave a persisted study plan");
     assertNoPrivateStorageFields(synthesisPayload);
 
-    const answers = Object.fromEntries(synthesisPayload.workspace.questions.map((question) => [question.id, question.answer]));
+    const knownAnswers = [...documentAnalysis.generatedQuestions, ...courseSynthesis.generatedQuestions].map((question) => question.answer);
+    const answers = Object.fromEntries(synthesisPayload.workspace.questions.map((question, index) => [question.id, knownAnswers[index] ?? ""]));
     const assessmentResponse = await submitAssessment(jsonRequest("/api/assessments/submit", {
       courseId,
       answers,
@@ -338,7 +340,7 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     assert.match(downloadResponse.headers.get("content-disposition") ?? "", /attachment; filename\*=UTF-8''vertical.pdf/);
     assert.deepEqual(Buffer.from(await downloadResponse.arrayBuffer()), originalBytes);
 
-    const workspaceResponse = await getPublicWorkspace();
+    const workspaceResponse = await getPublicWorkspace(new NextRequest("http://localhost/api/workspace"));
     assert.equal(workspaceResponse.status, 200);
     const publicWorkspace = await responseJson<{
       courses: Array<{ id: string; mastery: number }>;

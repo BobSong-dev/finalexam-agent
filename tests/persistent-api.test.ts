@@ -173,7 +173,7 @@ test("persistent API validates inputs, hides storage internals, and invalidates 
   );
   assert.equal(workspace.courseSyntheses[coursePayload.course.id], undefined);
 
-  const workspaceResponse = await getWorkspace();
+  const workspaceResponse = await getWorkspace(new NextRequest("http://localhost/api/workspace"));
   const workspaceBody = await workspaceResponse.text();
   assert.equal(workspaceResponse.status, 200);
   assert.equal(workspaceBody.includes("objectKey"), false);

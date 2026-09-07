@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AiAnalysisError, generateStudyPlan, resolveAiRequestConfig, resolveModel } from "@/lib/ai-analysis";
+import { AiAnalysisError, generateStudyPlan, pinCustomUpstream, resolveAiRequestConfig, resolveModel } from "@/lib/ai-analysis";
 import { PlanValidationError, buildAdaptivePlan, materializeAiPlan, validatePlanRequest } from "@/lib/plan-engine";
 import { WorkspaceStoreError, abandonPlanGeneration, beginPlanGeneration, clockTimeToMinutes, rebuildPlan, replacePlanWithGeneratedPlan, toPublicWorkspace } from "@/lib/workspace-store";
 import type { PlanRequest } from "@/lib/types";
@@ -7,7 +7,7 @@ import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 interface PlanGenerateBody {
   model?: string;
@@ -59,9 +59,15 @@ export async function POST(request: NextRequest) {
     }
 
     const model = resolveModel(modelBody.model);
+    const requestBaseUrl = request.headers.get("x-openai-base-url");
+    await pinCustomUpstream(aiConfig.baseURL, Boolean(requestBaseUrl?.trim()));
     const reservation = await beginPlanGeneration();
     planRunId = reservation.runId;
     const { context } = reservation;
+    const knownFocuses = new Set(context.aiCourses.flatMap((course) => [
+      ...course.insights.map((insight) => insight.title),
+      ...course.recentMisses.map((miss) => miss.topic),
+    ]));
 
     const entries = await generateStudyPlan({
       courses: context.aiCourses,
@@ -74,6 +80,7 @@ export async function POST(request: NextRequest) {
       context.courses,
       context.availability,
       clockTimeToMinutes(context.studyDayStart),
+      knownFocuses,
     );
     const totalCapacity = context.availability.reduce((total, day) => total + day.minutes, 0);
     if (!tasks.length && totalCapacity > 0) {

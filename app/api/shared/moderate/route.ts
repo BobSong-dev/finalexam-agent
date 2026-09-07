@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CommunityStoreError, moderateSharedMaterial, toPublicWorkspace } from "@/lib/workspace-store";
-import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
+import { assertCommunityAdmin, assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,9 +9,7 @@ export async function POST(request: NextRequest) {
   try {
     assertSameOrigin(request);
     enforceRateLimit(request, "community-moderate", 60);
-    const expected = process.env.COMMUNITY_ADMIN_TOKEN?.trim();
-    const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
-    if (!expected || !supplied || supplied !== expected) return NextResponse.json({ error: "管理员审核凭据无效或未配置。", code: "COMMUNITY_ADMIN_REQUIRED" }, { status: 403 });
+    assertCommunityAdmin(request);
     const body: unknown = await request.json().catch(() => undefined);
     if (!body || typeof body !== "object" || Array.isArray(body)) return NextResponse.json({ error: "审核请求必须是 JSON 对象。" }, { status: 400 });
     const payload = body as { materialId?: unknown; decision?: unknown; quality?: unknown; reason?: unknown };

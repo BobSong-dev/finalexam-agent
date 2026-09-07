@@ -1,4 +1,4 @@
-import type { CourseSynthesis, DocumentAnalysis } from "./ai-types";
+import type { AiTokenUsage, CourseSynthesis, DocumentAnalysis, ProcessingJob } from "./ai-types";
 import type { Availability, Course, CreditTransaction, Insight, Material, Question, SharedMaterial, StudyTask } from "./types";
 
 /**
@@ -30,6 +30,7 @@ export interface WorkspaceProfile {
   timezone: string;
   /** First study slot of the day, "HH:MM" in the profile timezone. */
   studyDayStart: string;
+  aiUsage?: AiTokenUsage;
 }
 
 export interface AssessmentAttempt {
@@ -124,11 +125,23 @@ export interface WorkspaceState {
   otpChallenges: OtpChallenge[];
   /** Uncompleted tasks from days before the current plan window. */
   missedTasks: StudyTask[];
+  processingJobs?: ProcessingJob[];
 }
 
 export type PublicMaterial = Omit<StoredMaterial, "objectKey" | "sha256" | "uploadedAt" | "updatedAt" | "analysisLease">;
-export type PublicWorkspaceState = Omit<WorkspaceState, "materials" | "sharedMaterialRecords" | "sharedReports" | "unlockGrants" | "auditLog" | "otpChallenges" | "planGenerationLease"> & {
+/** 提交前不下发标准答案与解析，避免练习页被直接读穿。 */
+export type PublicQuestion = Omit<Question, "answer" | "explanation">;
+export type PracticeReveal = {
+  questionId: string;
+  correct: boolean;
+  answer: string;
+  explanation: string;
+};
+export type PublicWorkspaceState = Omit<WorkspaceState, "materials" | "questions" | "documentAnalyses" | "courseSyntheses" | "sharedMaterialRecords" | "sharedReports" | "unlockGrants" | "auditLog" | "otpChallenges" | "planGenerationLease"> & {
   materials: PublicMaterial[];
+  questions: PublicQuestion[];
+  documentAnalyses: WorkspaceState["documentAnalyses"];
+  courseSyntheses: WorkspaceState["courseSyntheses"];
 };
 
 export type PublicSharedMaterial = SharedMaterial & {

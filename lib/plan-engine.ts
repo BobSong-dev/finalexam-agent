@@ -136,6 +136,7 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
         type,
         status: "待完成",
         reason: `${daysLeft} 天后考试 · ${focus.reason}`,
+        knowledge: missed ? missed.topic : focus.title,
       });
       remaining -= duration;
       elapsedMinutes += duration;
@@ -152,7 +153,7 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
  * unknown codes, unknown/expired dates and overflow minutes are dropped or
  * clamped so a model can never schedule beyond a day's availability.
  */
-export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], availability: Availability[], dayStartMinutes = DEFAULT_DAY_START_MINUTES): StudyTask[] {
+export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], availability: Availability[], dayStartMinutes = DEFAULT_DAY_START_MINUTES, knownFocuses: ReadonlySet<string> = new Set()): StudyTask[] {
   const byCode = new Map(courses.map((course) => [course.code, course]));
   const capacityByDate = new Map(availability.map((day) => [day.date, day.minutes]));
   const dayState = new Map<string, { remaining: number; elapsed: number; slot: number }>();
@@ -172,7 +173,12 @@ export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], ava
     const rawMinutes = Math.round(entry.durationMinutes / 15) * 15;
     const duration = Math.max(15, Math.min(rawMinutes, 120, state.remaining));
     const type = (taskKinds as string[]).includes(entry.type) ? entry.type : "复习";
-    const focus = entry.focus.trim().slice(0, 120) || course.name;
+    const rawFocus = entry.focus.trim().slice(0, 120);
+    const focus = !rawFocus
+      ? course.name
+      : knownFocuses.size === 0 || knownFocuses.has(rawFocus)
+        ? rawFocus
+        : [...knownFocuses].find((item) => rawFocus.includes(item) || item.includes(rawFocus)) ?? rawFocus;
     const phase = examPhaseLabel(differenceInDays(entry.date, course.examDate));
     tasks.push({
       id: `${entry.date}-${course.id}-${state.slot}`,
@@ -184,6 +190,7 @@ export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], ava
       type,
       status: "待完成",
       reason: entry.reason.trim().slice(0, 200) || `依据「${focus}」`,
+      knowledge: focus,
     });
     state.remaining -= duration;
     state.elapsed += duration;
@@ -192,10 +199,16 @@ export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], ava
   return tasks;
 }
 
+export function insightImportance(insight: Insight): number {
+  if (Number.isInteger(insight.importance) && insight.importance >= 1 && insight.importance <= 5) return insight.importance;
+  return Math.min(5, Math.max(1, insight.frequency || 1));
+}
+
 function rankedInsights(insights: Insight[]): Insight[] {
   return [...insights].sort((left, right) =>
     left.courseId.localeCompare(right.courseId)
     || right.frequency - left.frequency
+    || insightImportance(right) - insightImportance(left)
     || left.mastery - right.mastery
     || left.title.localeCompare(right.title));
 }
@@ -222,7 +235,8 @@ function nextTopicForCourse(course: Course, queue: Insight[] | undefined, cursor
   cursorsByCourse.set(course.id, cursor + 1);
   if (queue?.length) {
     const insight = queue[cursor % queue.length]!;
-    return { title: insight.title, reason: `依据「${insight.title}」· 重要度 ${insight.frequency}/5` };
+    const importance = insightImportance(insight);
+    return { title: insight.title, reason: `依据「${insight.title}」· 重要度 ${importance}/5 · 出现 ${insight.frequency} 份` };
   }
   return {
     title: FIRST_PASS_ACTIVITIES[cursor % FIRST_PASS_ACTIVITIES.length]!,

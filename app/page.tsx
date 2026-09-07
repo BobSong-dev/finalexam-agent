@@ -2,6 +2,7 @@ import HomeClient from "./home-client";
 import { getServerAiStatus } from "@/lib/ai-analysis";
 import { getWorkspace, toPublicWorkspace } from "@/lib/workspace-store";
 import type { PublicWorkspaceState } from "@/lib/workspace-types";
+import { viewFromQuery } from "./ui-types";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +13,10 @@ function localDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-export default async function Page() {
+export default async function Page({ searchParams }: { searchParams: Promise<{ view?: string | string[]; course?: string | string[] }> }) {
   let initialWorkspace: PublicWorkspaceState | null = null;
   let initialWorkspaceError = "";
+  const params = await searchParams;
 
   try {
     initialWorkspace = toPublicWorkspace(await getWorkspace());
@@ -23,12 +25,16 @@ export default async function Page() {
     initialWorkspaceError = "无法读取本地学习工作区，请检查数据目录是否可用。";
   }
 
+  const courseParam = Array.isArray(params.course) ? params.course[0] : params.course;
+
   return (
     <HomeClient
       initialWorkspace={initialWorkspace}
       initialWorkspaceError={initialWorkspaceError}
       initialToday={localDateKey()}
       initialAiStatus={getServerAiStatus()}
+      initialView={viewFromQuery(params.view)}
+      initialCourseId={courseParam ?? ""}
     />
   );
 }

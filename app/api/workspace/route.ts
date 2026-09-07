@@ -5,8 +5,9 @@ import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    enforceRateLimit(request, "workspace-read", 120);
     return NextResponse.json(toPublicWorkspace(await getWorkspace()), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const security = securityErrorResponse(error);

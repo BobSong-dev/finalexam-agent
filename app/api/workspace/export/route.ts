@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { WorkspaceStoreError, exportWorkspaceData } from "@/lib/workspace-store";
-import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
+import { assertNotCrossSite, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: NextRequest) {
   try {
-    assertSameOrigin(request);
+    assertNotCrossSite(request);
     enforceRateLimit(request, "workspace-export", 10);
     const workspace = await exportWorkspaceData();
     const date = new Date().toISOString().slice(0, 10);

@@ -139,7 +139,7 @@ test("course synthesis is parsed only when all required evidence fields exist", 
   assert.equal(parsed.highFrequencyPoints[0]?.sources.length, 2);
 });
 
-test("course synthesis rejects more than twelve documents instead of silently omitting sources", async () => {
+test("course synthesis rejects more than twenty documents instead of silently omitting sources", async () => {
   const analysis = parseDocumentAnalysis(JSON.stringify({
     documentTitle: "资料.pdf",
     materialKind: "试卷",
@@ -155,7 +155,7 @@ test("course synthesis rejects more than twelve documents instead of silently om
   await assert.rejects(
     () => synthesizeCourse({
       course: { name: "高等数学", code: "MATH201", teacher: "测试老师", term: "2026 秋" },
-      analyses: Array.from({ length: 13 }, () => analysis),
+      analyses: Array.from({ length: 21 }, () => analysis),
       apiKey: "not-used-before-validation",
       model: "gpt-5-mini",
     }),
@@ -185,5 +185,5 @@ test("AI plan output rejects malformed, oversized or empty plans", () => {
   assert.throws(() => parseStudyPlan(JSON.stringify({ plan: [{ ...valid, durationMinutes: 0 }] })), /时长无效/);
   assert.throws(() => parseStudyPlan(JSON.stringify({ plan: [{ ...valid, type: "闲聊" }] })), /格式无效/);
   assert.throws(() => parseStudyPlan(JSON.stringify({ plan: [{ ...valid, date: "2026-02-30" }] })), /日期无效/);
-  assert.throws(() => parseStudyPlan(JSON.stringify({ plan: Array.from({ length: 29 }, () => valid) })), /数量过多/);
+  assert.throws(() => parseStudyPlan(JSON.stringify({ plan: Array.from({ length: 36 }, () => valid) })), /数量过多/);
 });

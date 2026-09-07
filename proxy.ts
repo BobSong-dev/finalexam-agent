@@ -7,7 +7,12 @@ const MAX_JSON_REQUEST_BYTES = 1024 * 1024;
  * multipart upload endpoint, whose body is handled once by the Route Handler.
  */
 export function proxy(request: NextRequest) {
+  const method = request.method.toUpperCase();
+  const mutating = method === "POST" || method === "PUT" || method === "PATCH";
   const raw = request.headers.get("content-length");
+  if (mutating && raw === null) {
+    return NextResponse.json({ error: "请求必须声明内容长度。" }, { status: 411, headers: { "Cache-Control": "no-store" } });
+  }
   if (raw !== null) {
     if (!/^\d+$/.test(raw.trim())) {
       return NextResponse.json({ error: "请求大小无效。" }, { status: 400, headers: { "Cache-Control": "no-store" } });

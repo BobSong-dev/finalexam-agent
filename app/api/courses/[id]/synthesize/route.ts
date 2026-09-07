@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AiAnalysisError, resolveAiRequestConfig, resolveModel, synthesizeCourse } from "@/lib/ai-analysis";
-import { WorkspaceStoreError, createCourseSynthesisSourceSnapshot, getWorkspace, saveCourseSynthesis, toPublicWorkspace } from "@/lib/workspace-store";
+import { AiAnalysisError, pinCustomUpstream, resolveAiRequestConfig, resolveModel, synthesizeCourse } from "@/lib/ai-analysis";
+import { enqueueCourseSynthesis, isAiRuntimeShuttingDown } from "@/lib/ai-jobs";
+import { WorkspaceStoreError, createCourseSynthesisSourceSnapshot, getWorkspace, saveCourseSynthesis, toPublicWorkspace, upsertProcessingJob } from "@/lib/workspace-store";
+import { acquireHeavyRequestSlot, runtimeCapacityErrorResponse } from "@/lib/runtime-capacity";
+import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
-import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
+export const maxDuration = 180;
 
 
 interface SynthesisRequest {
   model?: string;
+  background?: boolean;
 }
 
 interface DynamicRouteContext {
@@ -17,6 +20,7 @@ interface DynamicRouteContext {
 }
 
 export async function POST(request: NextRequest, context: DynamicRouteContext) {
+  let releaseCapacity: (() => void) | undefined;
   try {
     assertSameOrigin(request);
     enforceRateLimit(request, "course-synthesize", 20);
@@ -40,22 +44,42 @@ export async function POST(request: NextRequest, context: DynamicRouteContext) {
 
     const sourceSnapshot = createCourseSynthesisSourceSnapshot(workspace, id);
     const model = resolveModel(body.model);
+    const requestBaseUrl = request.headers.get("x-openai-base-url");
     const aiConfig = resolveAiRequestConfig({
       requestKey: request.headers.get("x-openai-api-key"),
-      requestBaseUrl: request.headers.get("x-openai-base-url"),
+      requestBaseUrl,
     });
-    const analysis = await synthesizeCourse({
-      course: { name: course.name, code: course.code, teacher: course.teacher, term: course.term },
+    await pinCustomUpstream(aiConfig.baseURL, Boolean(requestBaseUrl?.trim()));
+    if (isAiRuntimeShuttingDown()) throw new WorkspaceStoreError("服务正在停止，请稍后重试。", 503);
+    const coursePayload = { name: course.name, code: course.code, teacher: course.teacher, term: course.term, examDate: course.examDate, priority: course.priority };
+    if (body.background === true) {
+      await upsertProcessingJob({ id: `synthesize:${id}`, type: "synthesize", targetId: id, stage: "queued" });
+      enqueueCourseSynthesis(id, { model, requestKey: request.headers.get("x-openai-api-key"), requestBaseUrl });
+      return NextResponse.json({
+        accepted: true,
+        background: true,
+        model,
+        workspace: toPublicWorkspace(await getWorkspace()),
+        notice: "课程综合已在后台开始，完成后高频考点会自动更新。",
+      }, { status: 202, headers: { "Cache-Control": "no-store" } });
+    }
+    releaseCapacity = acquireHeavyRequestSlot();
+    const { synthesis, usage } = await synthesizeCourse({
+      course: coursePayload,
       analyses,
       model,
       ...aiConfig,
     });
-    const nextWorkspace = await saveCourseSynthesis(id, analysis, sourceSnapshot);
-    return NextResponse.json({ provider: "openai", model, analysis, workspace: toPublicWorkspace(nextWorkspace) }, { headers: { "Cache-Control": "no-store" } });
+    const nextWorkspace = await saveCourseSynthesis(id, synthesis, sourceSnapshot, usage);
+    return NextResponse.json({ provider: "openai", model, analysis: synthesis, workspace: toPublicWorkspace(nextWorkspace) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const security = securityErrorResponse(error);
     if (security) return security;
+    const capacity = runtimeCapacityErrorResponse(error);
+    if (capacity) return capacity;
     if (error instanceof AiAnalysisError || error instanceof WorkspaceStoreError) return NextResponse.json({ error: error.message }, { status: error.status });
     return NextResponse.json({ error: "课程综合无法完成，请检查 AI 配置和网络后重试。" }, { status: 500 });
+  } finally {
+    releaseCapacity?.();
   }
 }

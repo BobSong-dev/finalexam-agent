@@ -37,7 +37,7 @@ export async function GET() {
       database: {
         mode: databaseConfiguredButInactive ? "configured-but-inactive" : "not-configured",
         active: false,
-        note: "This runtime persists one workspace as local JSON and uploaded files; PostgreSQL is an adapter target, not active here.",
+        note: "This binary ignores DATABASE_URL. Persistence is local JSON and uploaded files; PostgreSQL is an adapter target, not connected.",
       },
     },
     services: {

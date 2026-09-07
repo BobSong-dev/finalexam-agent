@@ -35,7 +35,10 @@ export interface Insight {
   id: string;
   courseId: string;
   title: string;
+  /** 支持该考点的资料份数，不是 1–5 重要度。 */
   frequency: number;
+  /** 资料内重要度 1–5；缺省时由旧数据的 frequency 回退。 */
+  importance: number;
   mastery: number;
   trend: "高频" | "需巩固" | "已掌握";
   sources: string[];
@@ -52,6 +55,8 @@ export interface StudyTask {
   type: "复习" | "练习" | "回顾" | "模拟";
   status: "待完成" | "已完成" | "已错过";
   reason: string;
+  /** 对应练习过滤用的知识点；没有则打开该课全部练习。 */
+  knowledge?: string;
 }
 
 export interface Question {
@@ -64,6 +69,8 @@ export interface Question {
   explanation: string;
   source: string;
   knowledge: string;
+  difficulty?: number;
+  pitfalls?: string;
 }
 
 export interface SharedMaterial {

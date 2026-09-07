@@ -5,6 +5,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-16.3.0-black.svg)](https://nextjs.org/)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)](https://nodejs.org/)
 
+
 面向大学生的中文复习工作区：把课程资料保存在自己控制的数据目录中，用真实 AI 提取可追溯考点、生成练习、记录掌握度并重排复习计划。
 
 当前发行版是**可上线的单工作区 self-hosted 应用**。它不依赖演示种子数据，真实主链路为：
@@ -45,6 +46,7 @@ app/                 # Next.js App Router：页面、视图与 API 路由
   home-client.tsx    # 首页客户端组件
 lib/                 # 核心逻辑：AI 分析、计划引擎、工作区存储、安全中间件等
 db/schema.sql        # 多用户迁移的数据库 schema 设计起点（当前未连接）
+docs/                # 生产优化规划（单机 self-hosted）
 scripts/             # HTTP 冒烟测试与备份校验脚本
 tests/               # 单元与集成测试（node --test）
 data/                # 本地数据目录（默认，已被 .gitignore 忽略）

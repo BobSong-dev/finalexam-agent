@@ -23,6 +23,7 @@ export async function POST(request: NextRequest) {
       correct: result.correct,
       total: result.total,
       score: result.score,
+      revealed: result.revealed,
       workspace: toPublicWorkspace(result.workspace),
       nextAction: "plan_rebuilt",
       notice: "已根据本次结果更新掌握度并重排后续任务。",

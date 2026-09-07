@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash, randomInt } from "node:crypto";
+import { createHmac, randomInt } from "node:crypto";
 import { getWorkspace, saveOtpChallenge, consumeOtpChallenge } from "./workspace-store";
 import type { WorkspaceState } from "./workspace-types";
 
@@ -31,7 +31,7 @@ function otpSecret(): string {
 }
 
 function hashOtp(email: string, code: string): string {
-  return createHash("sha256").update(`${otpSecret()}\0${email}\0${code}`).digest("hex");
+  return createHmac("sha256", otpSecret()).update(`${email}\0${code}`).digest("hex");
 }
 
 function schoolForEmail(email: string): string | undefined {
@@ -70,6 +70,9 @@ export async function requestEmailOtp(emailInput: unknown): Promise<{ email: str
     const url = providerUrl();
     const codeHash = hashOtp(email, code);
     const providerToken = process.env.EMAIL_PROVIDER_TOKEN?.trim();
+    if (process.env.NODE_ENV === "production" && !providerToken) {
+      throw new AuthError("管理员尚未配置 EMAIL_PROVIDER_TOKEN，邮箱验证暂不可用。", 503, "EMAIL_PROVIDER_NOT_CONFIGURED");
+    }
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(providerToken ? { Authorization: `Bearer ${providerToken}` } : {}) },

@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AiAnalysisError, analyzeDocument, resolveAiRequestConfig, resolveModel } from "@/lib/ai-analysis";
+import { AiAnalysisError, analyzeDocument, pinCustomUpstream, resolveAiRequestConfig, resolveModel } from "@/lib/ai-analysis";
+import { enqueueMaterialAnalysis, isAiRuntimeShuttingDown } from "@/lib/ai-jobs";
 import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
 import { acquireHeavyRequestSlot, runtimeCapacityErrorResponse } from "@/lib/runtime-capacity";
-import { WorkspaceStoreError, beginMaterialAnalysis, failMaterialAnalysis, getStoredMaterialFileReference, getWorkspace, saveDocumentAnalysis, toPublicWorkspace } from "@/lib/workspace-store";
+import { WorkspaceStoreError, beginMaterialAnalysis, failMaterialAnalysis, getStoredMaterialFileReference, getWorkspace, saveDocumentAnalysis, toPublicWorkspace, upsertProcessingJob } from "@/lib/workspace-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 interface AnalysisRequest {
   model?: string;
+  background?: boolean;
 }
 
 export async function POST(request: NextRequest, context: RouteContext<"/api/materials/[id]/analyze">) {
@@ -29,28 +31,48 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/mat
     }
     const { material, filePath, byteSize } = await getStoredMaterialFileReference(id);
     const model = resolveModel(body.model);
+    const requestBaseUrl = request.headers.get("x-openai-base-url");
     const { apiKey, baseURL } = resolveAiRequestConfig({
       requestKey: request.headers.get("x-openai-api-key"),
-      requestBaseUrl: request.headers.get("x-openai-base-url"),
+      requestBaseUrl,
     });
+    await pinCustomUpstream(baseURL, Boolean(requestBaseUrl?.trim()));
     const courseContext = (await getWorkspace()).courses.find((item) => item.id === material.courseId);
     if (!courseContext) throw new WorkspaceStoreError("资料所属课程已不存在。", 404);
-    releaseCapacity = acquireHeavyRequestSlot();
+    if (isAiRuntimeShuttingDown()) throw new WorkspaceStoreError("服务正在停止，请稍后重试分析。", 503);
     const reservation = await beginMaterialAnalysis(id);
     analysisRunId = reservation.runId;
-    const analysis = await analyzeDocument({
+    const coursePayload = { name: courseContext.name, code: courseContext.code, teacher: courseContext.teacher, term: courseContext.term, examDate: courseContext.examDate, priority: courseContext.priority };
+    if (body.background === true) {
+      await upsertProcessingJob({ id: `analyze:${id}`, type: "analyze", targetId: id, stage: "queued" });
+      enqueueMaterialAnalysis(id, {
+        model,
+        requestKey: request.headers.get("x-openai-api-key"),
+        requestBaseUrl,
+      }, analysisRunId);
+      analysisRunId = undefined;
+      return NextResponse.json({
+        accepted: true,
+        background: true,
+        model,
+        workspace: toPublicWorkspace(await getWorkspace()),
+        notice: "分析已在后台开始，可以离开此页。完成后资料卡会更新。",
+      }, { status: 202, headers: { "Cache-Control": "no-store" } });
+    }
+    releaseCapacity = acquireHeavyRequestSlot();
+    const { analysis, usage } = await analyzeDocument({
       file: {
         name: material.name,
         size: byteSize,
         type: material.mimeType || "application/octet-stream",
         filePath,
       },
-      course: { name: courseContext.name, code: courseContext.code, teacher: courseContext.teacher, term: courseContext.term },
+      course: coursePayload,
       model,
       apiKey,
       baseURL,
     });
-    const workspace = await saveDocumentAnalysis(id, analysis, analysisRunId);
+    const workspace = await saveDocumentAnalysis(id, analysis, analysisRunId, usage);
     analysisRunId = undefined;
     return NextResponse.json({ provider: "openai", model, analysis, workspace: toPublicWorkspace(workspace) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

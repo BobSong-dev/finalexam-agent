@@ -1,12 +1,14 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AiStatus, CourseSynthesis, DocumentAnalysis } from "@/lib/ai-types";
 import type { Availability, Course, Insight, Material, StudyTask } from "@/lib/types";
-import type { PublicWorkspaceState } from "@/lib/workspace-types";
-import { courseById, formatExamDate, initials } from "./ui-helpers";
+import type { PracticeReveal, PublicWorkspaceState } from "@/lib/workspace-types";
+import { courseById, daysUntilExam, formatExamDate, initials } from "./ui-helpers";
 import type { AnalysisAttempt, CourseAiRecord, CourseDraft, ProfileDraft, View } from "./ui-types";
+import { VIEW_QUERY } from "./ui-types";
 
 const defaultProfileDraft = (): ProfileDraft => ({ displayName: "", email: "", school: "", examGoal: "在期末前完成一轮高频考点复习", timezone: "Asia/Shanghai", studyDayStart: "18:30" });
 
@@ -57,6 +59,9 @@ const AiSettingsModal = dynamic(() => import("./modals/ai-settings-modal"), {
 });
 const CourseModal = dynamic(() => import("./modals/course-modal"), {
   loading: () => <DeferredModalLoading label="课程设置" />,
+});
+const ConfirmModal = dynamic(() => import("./modals/confirm-modal"), {
+  loading: () => <DeferredModalLoading label="确认" />,
 });
 
 function localDateKey(date = new Date()): string {
@@ -137,14 +142,25 @@ interface HomeClientProps {
   initialWorkspaceError: string;
   initialToday: string;
   initialAiStatus: AiStatus;
+  initialView: View;
+  initialCourseId: string;
 }
 
-export default function HomeClient({ initialWorkspace, initialWorkspaceError, initialToday, initialAiStatus }: HomeClientProps) {
-  const [activeView, setActiveView] = useState<View>("总览");
+export default function HomeClient({ initialWorkspace, initialWorkspaceError, initialToday, initialAiStatus, initialView, initialCourseId }: HomeClientProps) {
+  const router = useRouter();
+  const [activeView, setActiveView] = useState<View>(initialView);
   const [workspace, setWorkspace] = useState<PublicWorkspaceState | null>(initialWorkspace);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspaceError, setWorkspaceError] = useState(initialWorkspaceError);
-  const [selectedCourseId, setSelectedCourseId] = useState(initialWorkspace?.courses[0]?.id ?? "");
+  const [selectedCourseId, setSelectedCourseId] = useState(
+    initialCourseId && initialWorkspace?.courses.some((course) => course.id === initialCourseId)
+      ? initialCourseId
+      : (initialWorkspace?.courses[0]?.id ?? ""),
+  );
+  const [practiceReveal, setPracticeReveal] = useState<PracticeReveal[]>([]);
+  const [practiceKnowledge, setPracticeKnowledge] = useState("");
+  const [confirmAction, setConfirmAction] = useState<{ title: string; message: string; danger?: boolean; run: () => Promise<void> } | null>(null);
+  const [confirmPending, setConfirmPending] = useState(false);
   const [workingMaterialId, setWorkingMaterialId] = useState<string | null>(null);
   const [synthesizingCourseId, setSynthesizingCourseId] = useState<string | null>(null);
   const [savingCourse, setSavingCourse] = useState(false);
@@ -180,14 +196,18 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
   const materials = activeCourseId ? workspace?.materials.filter((material) => material.courseId === activeCourseId) ?? [] : [];
   const visibleMaterials = materials.filter((material) => material.status !== "失败" || !materials.some((other) => other.id !== material.id && other.status === "已分析" && other.name === material.name));
   const insights = activeCourseId ? workspace?.insights.filter((insight) => insight.courseId === activeCourseId) ?? [] : [];
-  const questions = activeCourseId ? workspace?.questions.filter((question) => question.courseId === activeCourseId) ?? [] : [];
+  const courseQuestions = activeCourseId ? workspace?.questions.filter((question) => question.courseId === activeCourseId) ?? [] : [];
+  const knowledgeMatched = practiceKnowledge ? courseQuestions.filter((question) => question.knowledge === practiceKnowledge) : courseQuestions;
+  const questions = knowledgeMatched.length ? knowledgeMatched : courseQuestions;
   const tasks = workspace?.tasks ?? [];
   const availability = workspace?.availability ?? [];
   const selectedModel = aiModel || aiStatus?.defaultModel || fallbackAiStatus.defaultModel;
   const modelOptions = aiStatus?.allowedModels?.length ? aiStatus.allowedModels : fallbackAiStatus.allowedModels;
   const aiReady = Boolean(sessionApiKey.trim() || aiStatus?.configured);
   const customBaseUrlDisabled = Boolean(sessionBaseUrl && aiStatus && !aiStatus.customBaseUrlAllowed);
-  const record = courseAiRecordFor(workspace, activeCourseId, selectedModel, workingMaterialId, synthesizingCourseId);
+  const analyzingId = workingMaterialId || materials.find((material) => material.status === "分析中")?.id || null;
+  const synthesizingId = synthesizingCourseId || workspace?.processingJobs?.find((job) => job.type === "synthesize")?.targetId || null;
+  const record = courseAiRecordFor(workspace, activeCourseId, selectedModel, analyzingId, synthesizingId);
   // The persisted plan window starts at "today" as computed in the profile
   // timezone; use it so the UI never disagrees with the server about which
   // day is today when the learner's timezone differs from the browser's.
@@ -196,6 +216,26 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
   const plannedMinutes = todayTasks.reduce((total, task) => total + task.duration, 0);
   const completedMinutes = todayTasks.filter((task) => task.status === "已完成").reduce((total, task) => total + task.duration, 0);
   const profile = workspace?.profile;
+
+  const navigate = useCallback((view: View, courseId?: string) => {
+    setActiveView(view);
+    const params = new URLSearchParams();
+    params.set("view", VIEW_QUERY[view]);
+    const nextCourse = courseId || selectedCourseId;
+    if (nextCourse) params.set("course", nextCourse);
+    router.replace(`/?${params.toString()}`, { scroll: false });
+    document.title = view === "总览" ? "期末星图 · 复习 Agent" : `${view} · 期末星图`;
+  }, [router, selectedCourseId]);
+
+  const triggerDownload = (href: string) => {
+    const link = document.createElement("a");
+    link.href = href;
+    link.rel = "noopener";
+    link.download = "";
+    document.body.append(link);
+    link.click();
+    link.remove();
+  };
 
   const notify = (message: string) => {
     setToast(message);
@@ -221,6 +261,14 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
       setWorkspaceLoading(false);
     }
   }, [applyWorkspace]);
+
+  useEffect(() => {
+    const analyzing = workspace?.materials.some((material) => material.status === "分析中");
+    const jobs = workspace?.processingJobs ?? [];
+    if (!analyzing && !jobs.length) return;
+    const timer = window.setInterval(() => { void loadWorkspace(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [workspace?.materials, workspace?.processingJobs, loadWorkspace]);
 
   const refreshAiStatus = useCallback(async () => {
     setAiStatusLoading(true);
@@ -290,7 +338,7 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
   };
 
   const exportWorkspace = () => {
-    window.open("/api/workspace/export", "_blank", "noopener,noreferrer");
+    triggerDownload("/api/workspace/export");
   };
 
   const requestEmailOtp = async () => {
@@ -402,10 +450,15 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
       const response = await fetch(`/api/materials/${encodeURIComponent(materialId)}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...requestHeaders() },
-        body: JSON.stringify({ model: selectedModel }),
+        body: JSON.stringify({ model: selectedModel, background: true }),
       });
-      if (!response.ok) throw new Error(await responseError(response, "资料分析失败"));
-      const payload = await response.json() as { analysis?: DocumentAnalysis; workspace?: PublicWorkspaceState };
+      if (!response.ok && response.status !== 202) throw new Error(await responseError(response, "资料分析失败"));
+      const payload = await response.json() as { analysis?: DocumentAnalysis; workspace?: PublicWorkspaceState; background?: boolean; notice?: string };
+      if (response.status === 202 || payload.background) {
+        if (payload.workspace) applyWorkspace(payload.workspace);
+        notify(payload.notice || "分析已在后台开始，可以离开此页。完成后资料卡会更新。");
+        return false;
+      }
       if (!payload.workspace || !payload.analysis) throw new Error("资料分析响应不完整，请重试。 ");
       applyWorkspace(payload.workspace);
       setPracticeAnswers({});
@@ -462,10 +515,15 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
       const response = await fetch(`/api/courses/${encodeURIComponent(selectedCourse.id)}/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...requestHeaders() },
-        body: JSON.stringify({ model: selectedModel }),
+        body: JSON.stringify({ model: selectedModel, background: true }),
       });
-      if (!response.ok) throw new Error(await responseError(response, "课程综合失败"));
-      const payload = await response.json() as { analysis?: CourseSynthesis; workspace?: PublicWorkspaceState };
+      if (!response.ok && response.status !== 202) throw new Error(await responseError(response, "课程综合失败"));
+      const payload = await response.json() as { analysis?: CourseSynthesis; workspace?: PublicWorkspaceState; background?: boolean; notice?: string };
+      if (response.status === 202 || payload.background) {
+        if (payload.workspace) applyWorkspace(payload.workspace);
+        notify(payload.notice || "课程综合已在后台开始。");
+        return;
+      }
       if (!payload.workspace || !payload.analysis) throw new Error("课程综合响应不完整，请重试。 ");
       applyWorkspace(payload.workspace);
       setPracticeAnswers({});
@@ -481,12 +539,13 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
 
   const completeTask = async (id: string) => {
     const task = tasks.find((item) => item.id === id);
-    if (!task || task.status === "已完成") return;
+    if (!task) return;
+    const completed = task.status !== "已完成";
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ completed: true }) });
+      const response = await fetch(`/api/tasks/${encodeURIComponent(id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ completed }) });
       if (!response.ok) throw new Error(await responseError(response, "任务更新失败"));
       applyWorkspace(await response.json() as PublicWorkspaceState);
-      notify("已保存任务完成状态。 ");
+      notify(completed ? "已保存任务完成状态。" : "已把任务重新标记为待完成。");
     } catch (error) {
       notify(`任务未能保存：${error instanceof Error ? error.message : "请稍后重试"}`);
     }
@@ -522,9 +581,10 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
     try {
       const response = await fetch("/api/assessments/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ courseId: selectedCourse.id, answers: practiceAnswers, selfRating: practiceRating }) });
       if (!response.ok) throw new Error(await responseError(response, "练习提交失败"));
-      const payload = await response.json() as { workspace?: PublicWorkspaceState; correct?: number; total?: number };
+      const payload = await response.json() as { workspace?: PublicWorkspaceState; correct?: number; total?: number; revealed?: PracticeReveal[] };
       if (!payload.workspace) throw new Error("练习结果响应不完整，请重试。 ");
       applyWorkspace(payload.workspace);
+      setPracticeReveal(payload.revealed ?? []);
       setPracticeSubmitted(true);
       notify(`练习结果已保存：${payload.correct ?? 0}/${payload.total ?? 0} 题正确，后续计划已更新。`);
     } catch (error) {
@@ -546,32 +606,36 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
     setShowCourseForm(true);
   };
 
-  const deleteCourseById = async (course: Course) => {
-    if (!window.confirm(`确定删除「${course.name}」及其全部资料、分析与练习记录吗？此操作不可撤销。`)) return;
-    try {
-      const response = await fetch(`/api/courses/${encodeURIComponent(course.id)}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await responseError(response, "课程删除失败"));
-      applyWorkspace(await response.json() as PublicWorkspaceState);
-      notify(`已删除「${course.name}」及其相关数据。`);
-    } catch (error) {
-      notify(`课程未能删除：${error instanceof Error ? error.message : "请稍后重试"}`);
-    }
+  const deleteCourseById = (course: Course) => {
+    setConfirmAction({
+      title: `删除「${course.name}」`,
+      message: "将删除该课程及其全部资料、分析与练习记录。此操作不可撤销。",
+      danger: true,
+      run: async () => {
+        const response = await fetch(`/api/courses/${encodeURIComponent(course.id)}`, { method: "DELETE" });
+        if (!response.ok) throw new Error(await responseError(response, "课程删除失败"));
+        applyWorkspace(await response.json() as PublicWorkspaceState);
+        notify(`已删除「${course.name}」及其相关数据。`);
+      },
+    });
   };
 
-  const deleteMaterial = async (material: Material) => {
-    if (!window.confirm(`确定删除「${material.name}」吗？分析结果和来源卡片也会被移除。`)) return;
-    try {
-      const response = await fetch(`/api/materials/${encodeURIComponent(material.id)}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await responseError(response, "资料删除失败"));
-      applyWorkspace(await response.json() as PublicWorkspaceState);
-      notify(`已删除「${material.name}」。`);
-    } catch (error) {
-      notify(`资料未能删除：${error instanceof Error ? error.message : "请稍后重试"}`);
-    }
+  const deleteMaterial = (material: Material) => {
+    setConfirmAction({
+      title: `删除「${material.name}」`,
+      message: "分析结果和来源卡片也会被移除。此操作不可撤销。",
+      danger: true,
+      run: async () => {
+        const response = await fetch(`/api/materials/${encodeURIComponent(material.id)}`, { method: "DELETE" });
+        if (!response.ok) throw new Error(await responseError(response, "资料删除失败"));
+        applyWorkspace(await response.json() as PublicWorkspaceState);
+        notify(`已删除「${material.name}」。`);
+      },
+    });
   };
 
   const downloadMaterial = (material: Material) => {
-    window.open(`/api/materials/${encodeURIComponent(material.id)}/download`, "_blank", "noopener,noreferrer");
+    triggerDownload(`/api/materials/${encodeURIComponent(material.id)}/download`);
   };
 
   const addCourse = async () => {
@@ -591,7 +655,7 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
         applyWorkspace(payload.workspace);
         setSelectedCourseId(payload.course.id);
         notify(`已创建「${payload.course.name}」，现在可以上传资料。`);
-        setActiveView("资料分析");
+        navigate("资料分析", payload.course.id);
       }
       setCourseDraft(defaultCourseDraft());
       setEditingCourseId(null);
@@ -608,33 +672,44 @@ export default function HomeClient({ initialWorkspace, initialWorkspaceError, in
     setPracticeAnswers({});
     setPracticeRating(undefined);
     setPracticeSubmitted(false);
+    setPracticeReveal([]);
+    setPracticeKnowledge("");
+    const params = new URLSearchParams();
+    params.set("view", VIEW_QUERY[activeView]);
+    params.set("course", courseId);
+    router.replace(`/?${params.toString()}`, { scroll: false });
   };
 
   const body = workspaceLoading ? <LoadingState /> : workspaceError ? <WorkspaceError message={workspaceError} onRetry={() => void loadWorkspace()} /> : !courseList.length ? <Onboarding onCreate={openNewCourse} /> : selectedCourse ? (
     <>
-      {activeView === "总览" && <Overview courseList={courseList} tasks={todayTasks} plannedMinutes={plannedMinutes} completedMinutes={completedMinutes} insights={insights} today={today} missedCount={workspace?.missedTasks.length ?? 0} onComplete={completeTask} onNavigate={setActiveView} onRegenerate={() => void regeneratePlan()} isRegenerating={savingPlan} />}
-      {activeView === "学习计划" && <PlanView tasks={tasks} courseList={courseList} availability={availability} planSource={workspace?.planSource} missedTasks={workspace?.missedTasks ?? []} today={today} onComplete={completeTask} onRegenerate={() => void regeneratePlan()} isRegenerating={savingPlan} onSaveAvailability={saveAvailability} savingAvailability={savingAvailability} />}
+      {activeView === "总览" && <Overview courseList={courseList} tasks={todayTasks} plannedMinutes={plannedMinutes} completedMinutes={completedMinutes} insights={insights} today={today} missedCount={workspace?.missedTasks.length ?? 0} onComplete={completeTask} onNavigate={navigate} onRegenerate={() => void regeneratePlan()} isRegenerating={savingPlan} />}
+      {activeView === "学习计划" && <PlanView tasks={tasks} courseList={courseList} availability={availability} planSource={workspace?.planSource} missedTasks={workspace?.missedTasks ?? []} today={today} onComplete={completeTask} onOpenPractice={(courseId, knowledge) => { setSelectedCourseId(courseId); setPracticeKnowledge(knowledge ?? ""); setPracticeAnswers({}); setPracticeSubmitted(false); setPracticeReveal([]); navigate("练习测验", courseId); }} onRegenerate={() => void regeneratePlan()} isRegenerating={savingPlan} onSaveAvailability={saveAvailability} savingAvailability={savingAvailability} />}
       {activeView === "资料分析" && <AnalysisView selectedCourse={selectedCourse} courseList={courseList} materials={visibleMaterials} insights={insights} aiRecord={record} insightsAreSynthesized={Boolean(workspace?.courseSyntheses[selectedCourse.id])} onSelectCourse={selectCourse} onUploadAndAnalyze={uploadAndAnalyze} onRetryAnalysis={analyzeStoredMaterial} onSynthesize={() => void synthesizeCourse()} onAddCourse={openNewCourse} onEditCourse={openCourseEditor} onDeleteCourse={deleteCourseById} onDownloadMaterial={downloadMaterial} onDeleteMaterial={deleteMaterial} />}
-      {activeView === "练习测验" && <PracticeView selectedCourse={selectedCourse} questions={questions} insights={insights} attempts={workspace?.assessmentAttempts.filter((attempt) => attempt.courseId === selectedCourse.id) ?? []} answers={practiceAnswers} rating={practiceRating} submitted={practiceSubmitted} submitting={submittingPractice} onChange={(id, value) => setPracticeAnswers((current) => ({ ...current, [id]: value }))} onRatingChange={setPracticeRating} onSubmit={() => void submitPractice()} onReset={() => { setPracticeAnswers({}); setPracticeRating(undefined); setPracticeSubmitted(false); }} />}
-      {activeView === "校内互助" && <CommunityView workspace={workspace} onApplyWorkspace={applyWorkspace} onNotify={notify} onNavigate={() => setActiveView("资料分析")} />}
+      {activeView === "练习测验" && <PracticeView selectedCourse={selectedCourse} courseList={courseList} questions={questions} insights={insights} attempts={workspace?.assessmentAttempts.filter((attempt) => attempt.courseId === selectedCourse.id) ?? []} answers={practiceAnswers} rating={practiceRating} submitted={practiceSubmitted} submitting={submittingPractice} revealed={practiceReveal} onSelectCourse={selectCourse} onChange={(id, value) => setPracticeAnswers((current) => ({ ...current, [id]: value }))} onRatingChange={setPracticeRating} onSubmit={() => void submitPractice()} onReset={() => { setPracticeAnswers({}); setPracticeRating(undefined); setPracticeSubmitted(false); setPracticeReveal([]); }} />}
+      {activeView === "校内互助" && <CommunityView workspace={workspace} onApplyWorkspace={applyWorkspace} onNotify={notify} onNavigate={() => navigate("资料分析")} />}
     </>
   ) : null;
 
+  const modalOpen = showProfileSettings || showAiSettings || showCourseForm || Boolean(confirmAction);
+
   return <main className="app-shell">
+    <div className="app-chrome" {...(modalOpen ? { inert: true, "aria-hidden": true } : {})}>
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark">f</div><div><strong>期末星图</strong><span>Finale Agent</span></div></div>
-      <div className="student-card"><div className="avatar">{initials(profile?.displayName || "我")}</div><div><strong>{profile?.displayName || "本地学习者"}</strong><p>{profile?.school || "本地私有工作区"}</p></div><span className="unverified">本地模式</span></div>
-      <nav aria-label="复习空间"><p className="nav-label">复习空间</p>{navItems.map((item) => <button key={item.view} className={`nav-item ${activeView === item.view ? "active" : ""}`} aria-label={`${item.view}：${item.subtitle}`} aria-current={activeView === item.view ? "page" : undefined} onClick={() => setActiveView(item.view)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span><b>{item.view}</b><small>{item.subtitle}</small></span></button>)}</nav>
+      <div className="student-card"><div className="avatar">{initials(profile?.displayName || "我")}</div><div><strong>{profile?.displayName || "本地学习者"}</strong><p>{profile?.school || "本地私有工作区"}</p></div><span className={profile?.verified ? "verified-badge" : "unverified"}>{profile?.verified ? "已验证" : "本地模式"}</span></div>
+      <nav aria-label="复习空间"><p className="nav-label">复习空间</p>{navItems.map((item) => <button key={item.view} type="button" className={`nav-item ${activeView === item.view ? "active" : ""}`} aria-label={`${item.view}：${item.subtitle}`} aria-current={activeView === item.view ? "page" : undefined} onClick={() => navigate(item.view)} disabled={!courseList.length && item.view !== "总览"}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span><b>{item.view}</b><small>{item.subtitle}</small></span></button>)}</nav>
       <div className="sidebar-bottom"><div className="credit-card"><span>◈</span><div><small>存储状态</small><strong>{workspaceLoading ? "…" : "本地"}</strong></div><button onClick={() => void loadWorkspace()}>刷新</button></div><button className="settings" onClick={openAiSettings}>✦ AI 设置与隐私</button></div>
     </aside>
     <section className="workspace">
       <header className="topbar"><div><p className="eyebrow">{today}</p><h1>{activeView === "总览" ? "今天，先把最重要的事做完。" : activeView}</h1></div><div className="top-actions"><button className="ai-settings-button" onClick={openAiSettings} aria-label="打开 AI 设置"><span aria-hidden="true">✦</span> AI 设置</button><button className="profile-button" onClick={openProfileSettings} aria-label="打开个人资料设置"><span aria-hidden="true">{initials(profile?.displayName || "我")}</span>{profile?.displayName || "本地学习者"}</button></div></header>
       {body}
     </section>
-    {toast && <div className="toast" role="status" aria-live="polite" aria-atomic="true"><span aria-hidden="true">✦</span>{toast}</div>}
+    </div>
+    {toast && <div className="toast" role={workspaceError ? "alert" : "status"} aria-live="polite" aria-atomic="true"><span aria-hidden="true">✦</span>{toast}</div>}
     {showProfileSettings && <ProfileModal profile={profile} draft={profileDraft} saving={savingProfile} otpEmail={otpEmail} otpCode={otpCode} otpPending={otpPending} onClose={() => setShowProfileSettings(false)} onChange={(patch) => setProfileDraft((current) => ({ ...current, ...patch }))} onSave={() => void saveProfile()} onExport={exportWorkspace} onOtpEmailChange={setOtpEmail} onOtpCodeChange={setOtpCode} onRequestOtp={() => void requestEmailOtp()} onVerifyOtp={() => void verifyEmailOtp()} />}
     {showAiSettings && <AiSettingsModal aiStatus={aiStatus} aiStatusLoading={aiStatusLoading} customBaseUrlDisabled={customBaseUrlDisabled} sessionApiKey={sessionApiKey} sessionBaseUrl={sessionBaseUrl} apiKeyDraft={apiKeyDraft} baseUrlDraft={baseUrlDraft} model={selectedModel} modelOptions={modelOptions} onClose={() => setShowAiSettings(false)} onRefresh={() => void refreshAiStatus()} onKeyChange={setApiKeyDraft} onBaseUrlChange={setBaseUrlDraft} onModelChange={updateAiModel} onSave={saveSessionAiConfig} onClear={clearSessionAiConfig} />}
     {showCourseForm && <CourseModal draft={courseDraft} editing={Boolean(editingCourseId)} saving={savingCourse} onClose={() => { setShowCourseForm(false); setEditingCourseId(null); }} onChange={(patch) => setCourseDraft((current) => ({ ...current, ...patch }))} onSubmit={() => void addCourse()} />}
+    {confirmAction && <ConfirmModal title={confirmAction.title} message={confirmAction.message} confirmLabel="确定" danger={confirmAction.danger} pending={confirmPending} onClose={() => { if (!confirmPending) setConfirmAction(null); }} onConfirm={() => { setConfirmPending(true); void confirmAction.run().catch((error) => notify(error instanceof Error ? error.message : "操作失败")).finally(() => { setConfirmPending(false); setConfirmAction(null); }); }} />}
   </main>;
 }
 
@@ -656,9 +731,13 @@ function Overview({ courseList, tasks, plannedMinutes, completedMinutes, insight
   const nextInsight = insights[0];
   const progress = plannedMinutes ? Math.round((completedMinutes / plannedMinutes) * 100) : 0;
   return <div className="view-content overview">
-    <section className="hero-grid"><div className="hero-card"><div className="hero-orbit orbit-a" /><div className="hero-orbit orbit-b" /><p>最近一场考试</p><div className="countdown"><strong>{urgentCourse ? formatExamDate(urgentCourse.examDate).split(" ")[0] : "—"}</strong><span>{urgentCourse ? "" : "待设置"}</span></div><h2>{urgentCourse ? `${urgentCourse.name} · ${formatExamDate(urgentCourse.examDate)}` : "先创建课程"}</h2><p className="hero-note">计划会按照考试日期、优先级、掌握度和可用时间自动重排。</p><button className="light-button" onClick={() => onNavigate("学习计划")}>查看复习计划 <span>→</span></button></div><div className="progress-card"><div className="card-top"><span>今日进度</span><button onClick={onRegenerate} disabled={isRegenerating}>{isRegenerating ? "重排中…" : "重新排期 ↻"}</button></div><div className="ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>已完成</span></div></div><div className="progress-stats"><div><b>{completedMinutes}</b><span>已学习分钟</span></div><div><b>{plannedMinutes}</b><span>计划分钟</span></div></div></div><div className="insight-card"><div className="sparkle">✦</div><p>Agent 发现</p><h3>{nextInsight ? <>{nextInsight.title}<br /><em>{nextInsight.trend}</em></> : <>上传资料后<br />生成你的<br /><em>高频薄弱点</em></>}</h3><button onClick={() => onNavigate("资料分析")}>查看依据与来源 →</button></div></section>
+    <section className="hero-grid"><div className="hero-card"><div className="hero-orbit orbit-a" /><div className="hero-orbit orbit-b" /><p>最近一场考试</p>{(() => {
+      const daysLeft = urgentCourse ? daysUntilExam(urgentCourse.examDate, today) : null;
+      const overdue = daysLeft !== null && daysLeft < 0;
+      return <div className="countdown"><strong>{daysLeft === null ? "—" : overdue ? "已过" : daysLeft}</strong><span>{daysLeft === null ? "待设置" : overdue ? "考试日" : "天"}</span></div>;
+    })()}<h2>{urgentCourse ? `${urgentCourse.name} · ${formatExamDate(urgentCourse.examDate)}` : "先创建课程"}</h2><p className="hero-note">计划会按照考试日期、优先级、掌握度和可用时间自动重排。</p><button className="light-button" type="button" onClick={() => onNavigate("学习计划")}>查看复习计划 <span>→</span></button></div><div className="progress-card"><div className="card-top"><span>今日进度</span><button onClick={onRegenerate} disabled={isRegenerating}>{isRegenerating ? "重排中…" : "重新排期 ↻"}</button></div><div className="ring" style={{ "--progress": `${progress * 3.6}deg` } as React.CSSProperties}><div><strong>{progress}%</strong><span>已完成</span></div></div><div className="progress-stats"><div><b>{completedMinutes}</b><span>已学习分钟</span></div><div><b>{plannedMinutes}</b><span>计划分钟</span></div></div></div><div className="insight-card"><div className="sparkle">✦</div><p>Agent 发现</p><h3>{nextInsight ? <>{nextInsight.title}<br /><em>{nextInsight.trend}</em></> : <>上传资料后<br />生成你的<br /><em>高频薄弱点</em></>}</h3><button onClick={() => onNavigate("资料分析")}>查看依据与来源 →</button></div></section>
     <section className="section-heading"><div><p className="eyebrow">TODAY&apos;S FOCUS</p><h2>今天的复习路径</h2></div><button className="text-button" onClick={() => onNavigate("学习计划")}>完整计划 <span>→</span></button></section>
-    <div className="task-list">{tasks.length ? tasks.map((task) => { const course = courseById(task.courseId, courseList); return <article className={`task-row ${task.status === "已完成" ? "done" : ""}`} key={task.id}><button className="check" onClick={() => onComplete(task.id)} aria-label={`完成 ${task.title}`}>{task.status === "已完成" ? "✓" : ""}</button><time>{task.start}</time><span className="course-dot" style={{ backgroundColor: course?.color }} /><div className="task-copy"><h3>{task.title}</h3><p>{task.reason}</p></div><span className={`task-type ${task.type}`}>{task.type}</span><strong className="duration">{task.duration} min</strong></article>; }) : <p className="empty-state">尚无今日任务。点击“重新排期”即可生成首个计划。</p>}</div>
+    <div className="task-list">{tasks.length ? tasks.map((task) => { const course = courseById(task.courseId, courseList); return <article className={`task-row ${task.status === "已完成" ? "done" : ""}`} key={task.id}><button className="check" type="button" onClick={() => onComplete(task.id)} aria-pressed={task.status === "已完成"} aria-label={task.status === "已完成" ? `取消完成 ${task.title}` : `完成 ${task.title}`}>{task.status === "已完成" ? "✓" : ""}</button><time>{task.start}</time><span className="course-dot" style={{ backgroundColor: course?.color }} /><div className="task-copy"><h3>{task.title}</h3><p>{task.reason}</p></div><span className={`task-type ${task.type}`}>{task.type}</span><strong className="duration">{task.duration} min</strong></article>; }) : <p className="empty-state">尚无今日任务。点击“重新排期”即可生成首个计划。</p>}</div>
     {missedCount > 0 && <p className="missed-hint">有 {missedCount} 个错过的任务记录在学习计划页，可重新安排。</p>}
     <section className="lower-grid"><article className="mastery-card"><div className="card-top"><div><p className="eyebrow">MASTERY MAP</p><h2>掌握度一览</h2></div><button onClick={() => onNavigate("练习测验")}>去练习 →</button></div>{courseList.map((course) => <div className="mastery-row" key={course.id}><span className="course-dot" style={{ backgroundColor: course.color }} /><div><b>{course.name}</b><small>{course.code} · {course.examDate.slice(5).replace("-", "/")}</small></div><div className="bar"><i style={{ width: `${course.mastery}%`, background: course.color }} /></div><strong>{course.mastery}%</strong></div>)}</article><article className="nudge-card"><span>⌁</span><p>下一步</p><h3>{tasks[0]?.start || "生成计划"}</h3><b>{tasks[0]?.title || "上传一份课程资料"}</b><small>{tasks[0] ? `${tasks[0].duration} 分钟 · ${tasks[0].reason}` : "资料分析完成后会生成专属任务"}</small><button onClick={() => onNavigate(tasks[0] ? "学习计划" : "资料分析")}>继续</button></article></section>
   </div>;

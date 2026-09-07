@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -22,6 +22,7 @@ import {
   readStoredMaterialFile,
   rebuildPlan,
   recordPractice,
+  answerMatches,
   replacePlanWithGeneratedPlan,
   sanitizeDownloadFilename,
   saveCourseSynthesis,
@@ -33,6 +34,7 @@ import {
   toPublicWorkspace,
   updateAvailability,
   updateWorkspaceProfile,
+  UPLOAD_ORPHAN_GRACE_MS,
 } from "../lib/workspace-store";
 
 const execFile = promisify(execFileCallback);
@@ -183,6 +185,8 @@ test("self-hosted workspace persists the full material-to-practice flow", async 
     writeFile(orphanObject, "%PDF-orphan"),
     writeFile(interruptedUpload, "%PDF-incomplete"),
   ]);
+  const aged = new Date(Date.now() - UPLOAD_ORPHAN_GRACE_MS - 1_000);
+  await Promise.all([utimes(orphanObject, aged, aged), utimes(interruptedUpload, aged, aged)]);
 
   const afterRestart = await readWorkspaceAfterRestart();
   assert.equal(afterRestart.courses[0]?.id, course.id);
@@ -220,7 +224,8 @@ test("self-hosted workspace persists the full material-to-practice flow", async 
 
   workspace = await saveCourseSynthesis(course.id, mockedCourseSynthesis, createCourseSynthesisSourceSnapshot(workspace, course.id));
   assert.equal(workspace.courseSyntheses[course.id]?.summary, mockedCourseSynthesis.summary);
-  assert.equal(workspace.insights.some((item) => item.id.startsWith(`synthesis-${course.id}-`) && item.frequency === 2), true);
+  assert.equal(workspace.insights.some((item) => item.id.startsWith(`synthesis-${course.id}-`) && item.title === "二重积分的区域变换"), true);
+  assert.equal(workspace.insights.filter((item) => item.courseId === course.id).every((item) => item.id.startsWith(`synthesis-${course.id}-`)), true);
   assert.equal(workspace.questions.some((question) => question.id.startsWith(`synthesis-${course.id}-`) && question.answer === "区域"), true);
 
   const practiceAnswers = Object.fromEntries(
@@ -406,7 +411,8 @@ test("uncompleted past-day tasks become missed records instead of vanishing", as
 });
 
 test("profile study day start shifts every generated task time", async () => {
-  const { course } = await createCourse({ name: "操作系统", code: "OS-START-501", teacher: "测试老师", term: "2026 秋", examDate: "2099-12-30", priority: "高" });
+  const soon = dateOnlyInTimeZone("Asia/Shanghai", new Date(Date.now() + 2 * 86_400_000));
+  const { course } = await createCourse({ name: "操作系统", code: "OS-START-501", teacher: "测试老师", term: "2026 秋", examDate: soon, priority: "高" });
   await updateWorkspaceProfile({ studyDayStart: "09:00" });
   const workspace = await getWorkspace();
   const tasks = workspace.tasks.filter((task) => task.courseId === course.id);
@@ -419,4 +425,34 @@ test("profile study day start shifts every generated task time", async () => {
     (error: unknown) => error instanceof WorkspaceStoreError && /HH:MM/.test(error.message),
     "invalid clock values must be rejected",
   );
+});
+
+test("fill-in answers require an exact match and partial submissions are not 100", async () => {
+  const fillIn = { id: "q1", courseId: "c", type: "填空" as const, prompt: "画出积分____。", answer: "区域", explanation: "", source: "t", knowledge: "二重积分" };
+  assert.equal(answerMatches(fillIn, "区域"), true);
+  assert.equal(answerMatches(fillIn, "先画出积分区域再换序"), false);
+  const choice = { id: "q2", courseId: "c", type: "单选" as const, prompt: "?", choices: ["A. 画出积分区域", "B. 直接积分"], answer: "A", explanation: "", source: "t", knowledge: "二重积分" };
+  assert.equal(answerMatches(choice, "A. 画出积分区域"), true);
+  assert.equal(answerMatches(choice, "not-a"), false);
+
+  const { course } = await createCourse({ name: "线性代数", code: "LA-SCORE-601", teacher: "测试老师", term: "2026 秋", examDate: "2099-12-30", priority: "中" });
+  const { material } = await storeUploadedMaterial(course.id, makeStudyFile("线代模拟.pdf", "%PDF-mock\nscoring"));
+  const reservation = await beginMaterialAnalysis(material.id);
+  const twoQuestions = {
+    ...mockedDocumentAnalysis,
+    generatedQuestions: [
+      mockedDocumentAnalysis.generatedQuestions[0]!,
+      { ...mockedDocumentAnalysis.generatedQuestions[0]!, id: "doc-q2", type: "填空" as const, prompt: "先画出积分____。", choices: [], answer: "区域", knowledge: "二重积分的区域变换" },
+    ],
+  };
+  await saveDocumentAnalysis(material.id, twoQuestions, reservation.runId);
+  const workspace = await getWorkspace();
+  const questionIds = workspace.questions.filter((question) => question.courseId === course.id).map((question) => question.id);
+  assert.equal(questionIds.length, 2);
+  const partial = await recordPractice(course.id, { [questionIds[0]!]: workspace.questions.find((question) => question.id === questionIds[0])!.answer });
+  assert.equal(partial.total, 2);
+  assert.ok(partial.score <= 50, "answering one of two questions must not score 100");
+  const publicState = toPublicWorkspace(partial.workspace);
+  assert.equal("answer" in (publicState.questions[0] ?? {}), false);
+  assert.equal(publicState.documentAnalyses[material.id]?.generatedQuestions.length, 0);
 });

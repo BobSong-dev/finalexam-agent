@@ -77,7 +77,8 @@ test("generated plan names the evidence-backed focus instead of a generic placeh
     id: "hash-focus",
     courseId: "urgent",
     title: "哈希冲突处理与查找效率",
-    frequency: 5,
+    frequency: 1,
+    importance: 5,
     mastery: 20,
     trend: "高频",
     sources: ["期末卷 · 第 2 页"],
@@ -98,9 +99,9 @@ test("plan phases follow exam proximity instead of one fixed label", () => {
 
 test("consecutive days rotate evidence-backed focuses instead of repeating one", () => {
   const insights: Insight[] = [
-    { id: "a", courseId: "urgent", title: "哈希冲突处理", frequency: 5, mastery: 20, trend: "高频", sources: [], summary: "" },
-    { id: "b", courseId: "urgent", title: "红黑树旋转", frequency: 4, mastery: 30, trend: "高频", sources: [], summary: "" },
-    { id: "c", courseId: "urgent", title: "B 树分裂", frequency: 3, mastery: 25, trend: "需巩固", sources: [], summary: "" },
+    { id: "a", courseId: "urgent", title: "哈希冲突处理", frequency: 2, importance: 5, mastery: 20, trend: "高频", sources: [], summary: "" },
+    { id: "b", courseId: "urgent", title: "红黑树旋转", frequency: 2, importance: 4, mastery: 30, trend: "高频", sources: [], summary: "" },
+    { id: "c", courseId: "urgent", title: "B 树分裂", frequency: 1, importance: 3, mastery: 25, trend: "需巩固", sources: [], summary: "" },
   ];
   const plan = buildAdaptivePlan({
     courses: [courses[0]!],

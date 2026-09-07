@@ -27,3 +27,9 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: HTTP smoke
+        run: node scripts/http-e2e-smoke.mjs

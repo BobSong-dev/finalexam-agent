@@ -19,6 +19,8 @@ services:
     image: finale-revision-agent:local
     init: true
     restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
     depends_on:
       init-data:
         condition: service_completed_successfully
@@ -41,6 +43,7 @@ services:
       SCHOOL_EMAIL_DOMAINS: ${SCHOOL_EMAIL_DOMAINS:-}
       COMMUNITY_ADMIN_TOKEN: ${COMMUNITY_ADMIN_TOKEN:-}
       FINALE_RATE_LIMIT_DISABLED: ${FINALE_RATE_LIMIT_DISABLED:-false}
+      FINALE_MAX_UPLOAD_BYTES: ${FINALE_MAX_UPLOAD_BYTES:-}
     volumes:
       - finale-data:/app/data
     security_opt:
@@ -50,5 +53,31 @@ services:
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
 
+  # 只读挂载数据卷，每日打一份 tar。不停止应用，适合单机崩溃一致性备份。
+  backup:
+    image: alpine:3.21
+    restart: unless-stopped
+    depends_on:
+      finale-agent:
+        condition: service_started
+    environment:
+      BACKUP_INTERVAL_SECONDS: ${FINALE_BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - finale-data:/data:ro
+      - finale-backups:/backup
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /backup
+        while true; do
+          name="finale-data-$$(date -u +%Y%m%dT%H%M%SZ).tgz"
+          tar -czf "/backup/$$name" -C /data .
+          echo "wrote /backup/$$name"
+          sleep "$${BACKUP_INTERVAL_SECONDS:-86400}"
+        done
+
 volumes:
   finale-data:
+  finale-backups:

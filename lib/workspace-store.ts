@@ -1,13 +1,16 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { buildAdaptivePlan } from "./plan-engine";
-import type { AiPlanCourse, CourseSynthesis, DocumentAnalysis } from "./ai-types";
+import { Readable } from "node:stream";
+import { buildAdaptivePlan, examPhaseLabel, insightImportance } from "./plan-engine";
+import type { AiPlanCourse, AiTokenUsage, CourseSynthesis, DocumentAnalysis, ProcessingJob } from "./ai-types";
 import { inferMimeType, isSupportedFile } from "./ai-analysis";
+import { timingSafeEqualText } from "./http-security";
 import type { Availability, Course, CreditTransaction, Insight, MaterialKind, Question, RecentMissedTopic, SharedMaterial, StudyTask } from "./types";
-import type { AssessmentAttempt, AuditEvent, CourseInput, ModerationQueue, OtpChallenge, PublicMaterial, PublicSharedMaterial, PublicWorkspaceState, StoredMaterial, StoredSharedMaterial, WorkspaceState } from "./workspace-types";
+import type { AssessmentAttempt, AuditEvent, CourseInput, ModerationQueue, OtpChallenge, PracticeReveal, PublicMaterial, PublicQuestion, PublicSharedMaterial, PublicWorkspaceState, StoredMaterial, StoredSharedMaterial, WorkspaceState } from "./workspace-types";
 
 const STATE_FILENAME = "workspace.json";
 const UPLOAD_DIRECTORY = "uploads";
@@ -18,6 +21,8 @@ const PLAN_WINDOW_DAYS = 7;
 const STALE_ANALYSIS_RESERVATION_MS = 30 * 60_000;
 const DEFAULT_STUDY_DAY_START = "18:30";
 const MISSED_TASKS_LIMIT = 60;
+export const UPLOAD_ORPHAN_GRACE_MS = 120_000;
+const STATE_LOCK_STALE_MS = 30_000;
 
 let writeTail: Promise<void> = Promise.resolve();
 let uploadReconciliation: Promise<void> | undefined;
@@ -143,6 +148,7 @@ function emptyWorkspace(): WorkspaceState {
       examGoal: "在期末前完成一轮高频考点复习",
       timezone: "Asia/Shanghai",
       studyDayStart: DEFAULT_STUDY_DAY_START,
+      aiUsage: { inputTokens: 0, outputTokens: 0, requests: 0 },
     },
     courses: [],
     availability: defaultAvailability("Asia/Shanghai"),
@@ -161,6 +167,7 @@ function emptyWorkspace(): WorkspaceState {
     unlockGrants: [],
     otpChallenges: [],
     missedTasks: [],
+    processingJobs: [],
   };
 }
 
@@ -169,7 +176,12 @@ function clone<T>(value: T): T {
 }
 
 function isWorkspaceState(value: unknown): value is WorkspaceState {
-  return Boolean(value && typeof value === "object" && (value as { version?: unknown }).version === 1 && Array.isArray((value as { courses?: unknown }).courses));
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.version === 1
+    && Boolean(candidate.profile && typeof candidate.profile === "object" && !Array.isArray(candidate.profile))
+    && Array.isArray(candidate.courses)
+    && Array.isArray(candidate.materials);
 }
 
 function normalizeWorkspaceState(value: WorkspaceState): WorkspaceState {
@@ -182,7 +194,7 @@ function normalizeWorkspaceState(value: WorkspaceState): WorkspaceState {
     courses: Array.isArray(candidate.courses) ? candidate.courses : [],
     availability: Array.isArray(candidate.availability) ? candidate.availability : empty.availability,
     materials: Array.isArray(candidate.materials) ? candidate.materials : [],
-    insights: Array.isArray(candidate.insights) ? candidate.insights : [],
+    insights: Array.isArray(candidate.insights) ? candidate.insights.map(normalizeInsight) : [],
     questions: Array.isArray(candidate.questions) ? candidate.questions : [],
     tasks: Array.isArray(candidate.tasks) ? candidate.tasks : [],
     sharedMaterials: Array.isArray(candidate.sharedMaterials) ? candidate.sharedMaterials : [],
@@ -196,11 +208,21 @@ function normalizeWorkspaceState(value: WorkspaceState): WorkspaceState {
     unlockGrants: Array.isArray(candidate.unlockGrants) ? candidate.unlockGrants : [],
     otpChallenges: Array.isArray(candidate.otpChallenges) ? candidate.otpChallenges : [],
     missedTasks: Array.isArray(candidate.missedTasks) ? candidate.missedTasks : [],
+    processingJobs: Array.isArray(candidate.processingJobs) ? candidate.processingJobs : [],
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeInsight(value: Insight): Insight {
+  const frequency = Number.isFinite(value.frequency) ? Math.max(1, Math.round(value.frequency)) : 1;
+  const importance = Number.isInteger(value.importance) && value.importance >= 1 && value.importance <= 5
+    ? value.importance
+    : Math.min(5, frequency);
+  const mastery = Number.isFinite(value.mastery) ? clamp(Math.round(value.mastery), 0, 100) : 0;
+  return { ...value, frequency, importance, mastery };
 }
 
 async function ensureDirectories(): Promise<void> {
@@ -233,9 +255,21 @@ function reconcileUploadDirectoryOnce(state: WorkspaceState): Promise<void> {
   const uploadObjectPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:pdf|ppt|pptx|doc|docx|jpg|jpeg|png|webp)$/i;
   uploadReconciliation = (async () => {
     const entries = await readdir(getUploadsDirectory(), { withFileTypes: true });
-    await Promise.all(entries
-      .filter((entry) => entry.isFile() && (entry.name.endsWith(".incoming") || (uploadObjectPattern.test(entry.name) && !referenced.has(entry.name))))
-      .map((entry) => unlink(path.join(getUploadsDirectory(), entry.name)).catch(() => undefined)));
+    const nowMs = Date.now();
+    await Promise.all(entries.map(async (entry) => {
+      if (!entry.isFile()) return;
+      const isIncoming = entry.name.endsWith(".incoming");
+      const isOrphan = uploadObjectPattern.test(entry.name) && !referenced.has(entry.name);
+      if (!isIncoming && !isOrphan) return;
+      const filePath = path.join(getUploadsDirectory(), entry.name);
+      try {
+        const info = await stat(filePath);
+        if (nowMs - info.mtimeMs < UPLOAD_ORPHAN_GRACE_MS) return;
+      } catch {
+        return;
+      }
+      await unlink(filePath).catch(() => undefined);
+    }));
   })();
   return uploadReconciliation;
 }
@@ -244,8 +278,53 @@ async function writeWorkspaceInternal(state: WorkspaceState): Promise<void> {
   await ensureDirectories();
   const statePath = getStatePath();
   const temporaryPath = `${statePath}.${randomUUID()}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const handle = await open(temporaryPath, "wx");
+  try {
+    const serialized = process.env.NODE_ENV === "production" ? JSON.stringify(state) : `${JSON.stringify(state, null, 2)}\n`;
+    await handle.writeFile(serialized, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(temporaryPath, statePath);
+  try {
+    const directory = await open(getWorkspaceDataDirectory(), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } catch {
+    // Windows 等环境可能不允许对目录 fsync，文件本身已经 sync + rename。
+  }
+}
+
+async function withStateFileLock<T>(operation: () => Promise<T>): Promise<T> {
+  await ensureDirectories();
+  const lockPath = `${getStatePath()}.lock`;
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      const handle = await open(lockPath, "wx");
+      try {
+        await handle.writeFile(`${process.pid}\n`, "utf8");
+        return await operation();
+      } finally {
+        await handle.close().catch(() => undefined);
+        await unlink(lockPath).catch(() => undefined);
+      }
+    } catch (error) {
+      if (!isNodeError(error, "EEXIST")) throw error;
+      if (Date.now() > deadline) throw new WorkspaceStoreError("工作区正忙，请稍后重试。", 503);
+      try {
+        const info = await stat(lockPath);
+        if (Date.now() - info.mtimeMs > STATE_LOCK_STALE_MS) await unlink(lockPath).catch(() => undefined);
+      } catch {
+        // 锁文件可能刚被释放。
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 /** Real read/write probe used by /api/health. It never touches user state. */
@@ -262,6 +341,70 @@ export async function checkWorkspaceStorage(): Promise<void> {
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return Boolean(error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === code);
+}
+
+const DEFAULT_UPLOAD_QUOTA_BYTES = 8 * 1024 * 1024 * 1024;
+
+async function assertUploadQuota(incomingBytes: number): Promise<void> {
+  const configured = process.env.FINALE_MAX_UPLOAD_BYTES?.trim();
+  const limit = configured && /^\d+$/.test(configured) ? Number(configured) : DEFAULT_UPLOAD_QUOTA_BYTES;
+  if (!Number.isSafeInteger(limit) || limit <= 0) return;
+  const used = (await getWorkspace()).materials.reduce((total, material) => total + (material.byteSize ?? 0), 0);
+  if (used + incomingBytes > limit) {
+    throw new WorkspaceStoreError("本地资料总容量已满，请删除不需要的资料后再上传。", 507);
+  }
+}
+
+function applyAiUsage(state: WorkspaceState, usage?: AiTokenUsage): void {
+  if (!usage || (usage.inputTokens <= 0 && usage.outputTokens <= 0 && usage.requests <= 0)) return;
+  const current = state.profile.aiUsage ?? { inputTokens: 0, outputTokens: 0, requests: 0 };
+  state.profile.aiUsage = {
+    inputTokens: current.inputTokens + Math.max(0, usage.inputTokens),
+    outputTokens: current.outputTokens + Math.max(0, usage.outputTokens),
+    requests: current.requests + Math.max(0, usage.requests),
+  };
+}
+
+export async function upsertProcessingJob(input: Omit<ProcessingJob, "startedAt" | "updatedAt"> & { startedAt?: string }): Promise<void> {
+  await mutateWorkspace((state) => {
+    const nowIso = now();
+    const existing = (state.processingJobs ??= []).find((job) => job.id === input.id);
+    if (existing) {
+      existing.stage = input.stage;
+      existing.updatedAt = nowIso;
+      return clone(state);
+    }
+    state.processingJobs.unshift({
+      id: input.id,
+      type: input.type,
+      targetId: input.targetId,
+      stage: input.stage,
+      startedAt: input.startedAt ?? nowIso,
+      updatedAt: nowIso,
+    });
+    if (state.processingJobs.length > 20) state.processingJobs.length = 20;
+    return clone(state);
+  });
+}
+
+export async function setProcessingJobStage(id: string, stage: ProcessingJob["stage"]): Promise<void> {
+  await mutateWorkspaceConditionally((state) => {
+    const job = state.processingJobs?.find((item) => item.id === id);
+    if (!job) return { changed: false, result: undefined };
+    job.stage = stage;
+    job.updatedAt = now();
+    return { changed: true, result: undefined };
+  });
+}
+
+export async function removeProcessingJob(id: string): Promise<void> {
+  await mutateWorkspaceConditionally((state) => {
+    const list = state.processingJobs ?? [];
+    const next = list.filter((job) => job.id !== id);
+    if (next.length === list.length) return { changed: false, result: undefined };
+    state.processingJobs = next;
+    return { changed: true, result: undefined };
+  });
 }
 
 interface ConditionalWorkspaceMutation<T> {
@@ -291,7 +434,7 @@ export interface PlanGenerationReservation {
 async function mutateWorkspaceConditionally<T>(
   mutator: (state: WorkspaceState) => ConditionalWorkspaceMutation<T> | Promise<ConditionalWorkspaceMutation<T>>,
 ): Promise<T> {
-  const run = writeTail.then(async () => {
+  const run = writeTail.then(async () => withStateFileLock(async () => {
     const state = await readWorkspaceInternal();
     const mutation = await mutator(state);
     if (mutation.changed) {
@@ -299,7 +442,7 @@ async function mutateWorkspaceConditionally<T>(
       await writeWorkspaceInternal(state);
     }
     return mutation.result;
-  });
+  }));
   writeTail = run.then(() => undefined, () => undefined);
   return run;
 }
@@ -320,12 +463,28 @@ export function toPublicMaterial(material: StoredMaterial): PublicMaterial {
   return publicMaterial;
 }
 
+function toPublicQuestion(question: Question): PublicQuestion {
+  const { answer: _answer, explanation: _explanation, ...publicQuestion } = question;
+  return publicQuestion;
+}
+
+function redactDocumentAnalysis(analysis: DocumentAnalysis): DocumentAnalysis {
+  return { ...analysis, generatedQuestions: [] };
+}
+
+function redactCourseSynthesis(synthesis: CourseSynthesis): CourseSynthesis {
+  return { ...synthesis, generatedQuestions: [] };
+}
+
 export function toPublicWorkspace(workspace: WorkspaceState): PublicWorkspaceState {
   const cloned = clone(workspace);
-  const { materials, sharedMaterialRecords: _sharedMaterialRecords, sharedReports: _sharedReports, unlockGrants: _unlockGrants, auditLog: _auditLog, otpChallenges: _otpChallenges, planGenerationLease: _planGenerationLease, ...publicFields } = cloned;
+  const { materials, questions, documentAnalyses, courseSyntheses, sharedMaterialRecords: _sharedMaterialRecords, sharedReports: _sharedReports, unlockGrants: _unlockGrants, auditLog: _auditLog, otpChallenges: _otpChallenges, planGenerationLease: _planGenerationLease, ...publicFields } = cloned;
   return {
     ...publicFields,
     materials: materials.map(toPublicMaterial),
+    questions: questions.map(toPublicQuestion),
+    documentAnalyses: Object.fromEntries(Object.entries(documentAnalyses).map(([id, analysis]) => [id, redactDocumentAnalysis(analysis)])),
+    courseSyntheses: Object.fromEntries(Object.entries(courseSyntheses).map(([id, synthesis]) => [id, redactCourseSynthesis(synthesis)])),
   };
 }
 
@@ -372,7 +531,7 @@ export async function consumeOtpChallenge(email: string, codeHash: string, match
       };
     }
     challenge.attempts += 1;
-    if (challenge.codeHash !== codeHash) {
+    if (!timingSafeEqualText(challenge.codeHash, codeHash)) {
       // Persist the failed attempt while still inside the mutation queue. The
       // caller throws only after this conditional mutation has been written.
       return {
@@ -680,6 +839,7 @@ function hasExpectedFileSignature(extension: string, bytes: Uint8Array): boolean
 export async function storeUploadedMaterial(courseId: string, file: File): Promise<{ material: StoredMaterial; workspace: WorkspaceState }> {
   if (!file.name || file.size <= 0) throw new WorkspaceStoreError("请选择一个非空资料文件。", 400);
   if (file.size > 50 * 1024 * 1024) throw new WorkspaceStoreError("单个资料文件不能超过 50 MB。", 413);
+  await assertUploadQuota(file.size);
   if (!isSupportedFile(file.name)) {
     throw new WorkspaceStoreError("不支持该资料格式。仅可上传 PDF、PPT/PPTX、DOC/DOCX、JPG、PNG 或 WEBP。", 415);
   }
@@ -865,13 +1025,13 @@ export async function failMaterialAnalysis(id: string, runId: string, source?: s
   });
 }
 
-export async function saveDocumentAnalysis(id: string, analysis: DocumentAnalysis, runId: string): Promise<WorkspaceState> {
+export async function saveDocumentAnalysis(id: string, analysis: DocumentAnalysis, runId: string, usage?: AiTokenUsage): Promise<WorkspaceState> {
   return mutateWorkspace((state) => {
     const material = state.materials.find((item) => item.id === id);
     if (!material) throw new WorkspaceStoreError("未找到资料。", 404);
     assertMaterialAnalysisLease(material, runId);
     state.documentAnalyses[id] = analysis;
-    material.status = "已分析";
+    material.status = analysis.confidence === "low" ? "需确认" : "已分析";
     material.pages = analysis.pageCount ?? 0;
     material.kind = analysis.materialKind === "未知" ? material.kind : analysis.materialKind;
     material.source = analysis.keyPoints[0]?.evidence.location ? `已识别 ${analysis.keyPoints.length} 个考点 · ${analysis.keyPoints[0].evidence.location}` : `已完成 AI 分析 · ${analysis.keyPoints.length} 个考点`;
@@ -891,7 +1051,8 @@ export async function saveDocumentAnalysis(id: string, analysis: DocumentAnalysi
       id: `material-${id}-point-${index}`,
       courseId: material.courseId,
       title: point.title,
-      frequency: Math.max(1, Math.min(5, point.importance)),
+      frequency: 1,
+      importance: Math.max(1, Math.min(5, point.importance)),
       mastery: getCourseMastery(state, material.courseId),
       trend: point.importance >= 4 ? "高频" : "需巩固",
       sources: [formatEvidence(point.evidence)],
@@ -907,7 +1068,10 @@ export async function saveDocumentAnalysis(id: string, analysis: DocumentAnalysi
       explanation: question.explanation,
       source: question.sourceLocation || material.name,
       knowledge: question.knowledge,
+      difficulty: question.difficulty,
+      pitfalls: question.pitfalls,
     })));
+    applyAiUsage(state, usage);
     refreshCourseWeights(state, material.courseId);
     rebuildTasksInState(state);
     return clone(state);
@@ -918,6 +1082,7 @@ export async function saveCourseSynthesis(
   courseId: string,
   synthesis: CourseSynthesis,
   sourceSnapshot: CourseSynthesisSourceSnapshot,
+  usage?: AiTokenUsage,
 ): Promise<WorkspaceState> {
   return mutateWorkspace((state) => {
     const course = state.courses.find((item) => item.id === courseId);
@@ -926,15 +1091,17 @@ export async function saveCourseSynthesis(
       throw new WorkspaceStoreError("资料在课程综合期间发生变化，请重新生成。", 409);
     }
     state.courseSyntheses[courseId] = synthesis;
-    state.insights = state.insights.filter((item) => !item.id.startsWith(`synthesis-${courseId}-`));
+    state.insights = state.insights.filter((item) => item.courseId !== courseId);
     state.questions = state.questions.filter((item) => !item.id.startsWith(`synthesis-${courseId}-`));
+    const analyzedCount = Math.max(1, state.materials.filter((item) => item.courseId === courseId && Boolean(state.documentAnalyses[item.id])).length);
     state.insights.push(...synthesis.highFrequencyPoints.map((point, index): Insight => ({
       id: `synthesis-${courseId}-point-${index}`,
       courseId,
       title: point.title,
-      frequency: point.frequency,
+      frequency: Math.max(1, Math.min(analyzedCount, point.frequency, point.sources.length || analyzedCount)),
+      importance: Math.max(1, Math.min(5, Math.round(point.frequency >= analyzedCount ? 5 : point.frequency + 1))),
       mastery: point.mastery,
-      trend: point.trend,
+      trend: point.trend === "已掌握" ? "需巩固" : point.trend,
       sources: point.sources,
       summary: point.summary,
     })));
@@ -948,7 +1115,10 @@ export async function saveCourseSynthesis(
       explanation: question.explanation,
       source: question.sourceLocation || "课程综合",
       knowledge: question.knowledge,
+      difficulty: question.difficulty,
+      pitfalls: question.pitfalls,
     })));
+    applyAiUsage(state, usage);
     refreshCourseWeights(state, courseId);
     rebuildTasksInState(state);
     return clone(state);
@@ -1005,16 +1175,29 @@ export async function deleteStoredMaterial(id: string): Promise<WorkspaceState> 
 
 function createPlanGenerationContext(state: WorkspaceState): PlanGenerationContext {
   const insightsByCourse = new Map<string, AiPlanCourse["insights"]>();
-  for (const insight of state.insights) {
+  const ranked = [...state.insights].sort((left, right) =>
+    right.frequency - left.frequency
+    || insightImportance(right) - insightImportance(left)
+    || left.mastery - right.mastery
+    || left.title.localeCompare(right.title));
+  for (const insight of ranked) {
     const list = insightsByCourse.get(insight.courseId) ?? [];
     if (list.length < 8) {
       list.push({
         title: insight.title.slice(0, 200),
         frequency: insight.frequency,
+        importance: insightImportance(insight),
         trend: insight.trend,
       });
     }
     insightsByCourse.set(insight.courseId, list);
+  }
+
+  const missesByCourse = new Map<string, AiPlanCourse["recentMisses"]>();
+  for (const miss of recentMissedTopics(state)) {
+    const list = missesByCourse.get(miss.courseId) ?? [];
+    if (list.length < 8) list.push({ topic: miss.topic.slice(0, 80), missedOn: miss.missedOn });
+    missesByCourse.set(miss.courseId, list);
   }
 
   return {
@@ -1025,6 +1208,7 @@ function createPlanGenerationContext(state: WorkspaceState): PlanGenerationConte
       priority: course.priority,
       mastery: course.mastery,
       insights: insightsByCourse.get(course.id) ?? [],
+      recentMisses: missesByCourse.get(course.id) ?? [],
     })),
     courses: clone(state.courses),
     availability: clone(state.availability),
@@ -1131,17 +1315,33 @@ export async function setTaskCompletion(id: string, completed: boolean): Promise
   });
 }
 
-export async function recordPractice(courseId: string, answers: Record<string, string>, selfRating?: number): Promise<{ workspace: WorkspaceState; correct: number; total: number; score: number }> {
+export async function recordPractice(courseId: string, answers: Record<string, string>, selfRating?: number): Promise<{ workspace: WorkspaceState; correct: number; total: number; score: number; revealed: PracticeReveal[] }> {
   return mutateWorkspace((state) => {
     const course = state.courses.find((item) => item.id === courseId);
     if (!course) throw new WorkspaceStoreError("未找到课程。", 404);
-    const questions = state.questions.filter((question) => question.courseId === courseId && answers[question.id] !== undefined);
+    const questions = state.questions.filter((question) => question.courseId === courseId);
     if (!questions.length) throw new WorkspaceStoreError("请至少提交一道本课程练习题。", 400);
-    const correct = questions.filter((question) => answerMatches(question, answers[question.id] ?? "")).length;
+    const submitted = questions.filter((question) => Object.prototype.hasOwnProperty.call(answers, question.id));
+    if (!submitted.length) throw new WorkspaceStoreError("请至少提交一道本课程练习题。", 400);
+    const revealed: PracticeReveal[] = questions.map((question) => ({
+      questionId: question.id,
+      correct: answerMatches(question, answers[question.id] ?? ""),
+      answer: question.answer,
+      explanation: question.explanation,
+    }));
+    const correct = revealed.filter((item) => item.correct).length;
     const score = Math.round((correct / questions.length) * 100);
-    const selfFactor = typeof selfRating === "number" && selfRating >= 1 && selfRating <= 5 ? (selfRating - 3) * 2 : 0;
-    course.mastery = clamp(Math.round(course.mastery * 0.72 + score * 0.28 + selfFactor), 0, 100);
-    state.insights = state.insights.map((insight) => insight.courseId === courseId ? { ...insight, mastery: course.mastery, trend: course.mastery >= 80 ? "已掌握" : insight.frequency >= 4 ? "高频" : "需巩固" } : insight);
+    for (const insight of state.insights.filter((item) => item.courseId === courseId)) {
+      const related = questions.filter((question) => question.knowledge === insight.title);
+      if (!related.length) continue;
+      const relatedScore = Math.round((related.filter((question) => answerMatches(question, answers[question.id] ?? "")).length / related.length) * 100);
+      insight.mastery = clamp(Math.round(insight.mastery * 0.72 + relatedScore * 0.28), 0, 100);
+      insight.trend = insight.mastery >= 80 ? "已掌握" : insightImportance(insight) >= 4 || insight.frequency >= 2 ? "高频" : "需巩固";
+    }
+    const insightMasteries = state.insights.filter((item) => item.courseId === courseId).map((item) => item.mastery);
+    course.mastery = insightMasteries.length
+      ? clamp(Math.round(insightMasteries.reduce((sum, value) => sum + value, 0) / insightMasteries.length), 0, 100)
+      : clamp(Math.round(course.mastery * 0.72 + score * 0.28), 0, 100);
     const attempt: AssessmentAttempt = {
       id: randomUUID(),
       courseId,
@@ -1156,24 +1356,22 @@ export async function recordPractice(courseId: string, answers: Record<string, s
     state.assessmentAttempts.unshift(attempt);
     if (state.assessmentAttempts.length > 200) state.assessmentAttempts.length = 200;
     appendAudit(state, "assessment.submitted", courseId, { correct, total: questions.length, score });
-    rebuildTasksInState(state);
-    return { workspace: clone(state), correct, total: questions.length, score };
+    rebuildTasksInState(state, "practice");
+    return { workspace: clone(state), correct, total: questions.length, score, revealed };
   });
 }
 
-function answerMatches(question: Question, actual: string): boolean {
+export function answerMatches(question: Question, actual: string): boolean {
   const normalizedExpected = normalizeAnswer(question.answer);
   const normalizedActual = normalizeAnswer(actual);
-  if (!normalizedActual) return false;
+  if (!normalizedActual || !normalizedExpected) return false;
   if (question.type === "单选") {
     const expectedChoice = choiceToken(normalizedExpected) ?? choiceIndex(question.choices, normalizedExpected);
     const actualChoice = choiceToken(normalizedActual) ?? choiceIndex(question.choices, normalizedActual);
     if (expectedChoice && actualChoice) return expectedChoice === actualChoice;
     return normalizedActual === normalizedExpected;
   }
-  // Keyword answers may reasonably contain the canonical answer in a longer
-  // explanation, but only when the canonical answer is meaningful.
-  return normalizedActual === normalizedExpected || (normalizedExpected.length >= 2 && normalizedActual.includes(normalizedExpected));
+  return normalizedActual === normalizedExpected;
 }
 
 function normalizeAnswer(value: string): string {
@@ -1215,7 +1413,11 @@ function refreshCourseWeights(state: WorkspaceState, courseId: string): void {
     course.highFrequencyWeight = 0.5;
     return;
   }
-  course.highFrequencyWeight = clamp(insights.reduce((sum, item) => sum + Math.min(5, item.frequency), 0) / (insights.length * 5), 0.2, 1);
+  course.highFrequencyWeight = clamp(insights.reduce((sum, item) => sum + insightImportance(item), 0) / (insights.length * 5), 0.2, 1);
+}
+
+function refreshCreditsFromLedger(state: WorkspaceState): void {
+  state.profile.credits = Math.max(0, state.ledger.reduce((sum, item) => sum + item.amount, 0));
 }
 
 function workspaceToday(state: WorkspaceState): string {
@@ -1227,7 +1429,7 @@ function studyDayStartMinutes(state: WorkspaceState): number {
   return isValidClockTime(value) ? clockTimeToMinutes(value) : clockTimeToMinutes(DEFAULT_STUDY_DAY_START);
 }
 
-function rebuildTasksInState(state: WorkspaceState): void {
+function rebuildTasksInState(state: WorkspaceState, trigger: "full" | "practice" = "full"): void {
   if (!state.courses.length) {
     state.tasks = [];
     state.planSource = "schedule";
@@ -1235,8 +1437,12 @@ function rebuildTasksInState(state: WorkspaceState): void {
   }
   collectMissedTasksInState(state);
   rollAvailabilityForward(state);
-  // Any automatic re-arrangement (analysis, practice, availability change) is
-  // the deterministic scheduler, never an AI call; record that honestly so the
+  if (trigger === "practice" && state.planSource === "ai" && state.tasks.length) {
+    injectMissedReviewTasks(state);
+    return;
+  }
+  // Any automatic re-arrangement (analysis, availability change) is the
+  // deterministic scheduler, never an AI call; record that honestly so the
   // UI never presents this plan as model output.
   state.planSource = "schedule";
   // A task id is a scheduling position, not a durable description of work.
@@ -1284,6 +1490,46 @@ function recentMissedTopics(state: WorkspaceState): RecentMissedTopic[] {
     }
   }
   return [...latestByTopic.values()].sort((left, right) => left.missedOn.localeCompare(right.missedOn)).slice(0, 12);
+}
+
+function injectMissedReviewTasks(state: WorkspaceState): void {
+  const today = workspaceToday(state);
+  const dayStart = studyDayStartMinutes(state);
+  const capacity = state.availability.find((item) => item.date === today)?.minutes ?? 0;
+  const todayTasks = state.tasks.filter((task) => task.date === today);
+  let used = todayTasks.reduce((total, task) => total + task.duration, 0);
+  let slot = todayTasks.length;
+  const existing = new Set(state.tasks.filter((task) => task.date >= today && task.type === "回顾").map((task) => task.title));
+  for (const miss of recentMissedTopics(state)) {
+    const course = state.courses.find((item) => item.id === miss.courseId);
+    if (!course || course.examDate < today) continue;
+    const marker = `重练错题「${miss.topic}」`;
+    if ([...existing].some((title) => title.includes(marker))) continue;
+    if (capacity - used < 15) break;
+    const duration = Math.min(30, capacity - used);
+    const phase = examPhaseLabel(Math.max(1, Math.ceil((Date.parse(`${course.examDate}T00:00:00.000Z`) - Date.parse(`${today}T00:00:00.000Z`)) / 86_400_000)));
+    const task: StudyTask = {
+      id: `${today}-${course.id}-miss-${slot}`,
+      courseId: course.id,
+      date: today,
+      start: startClock(dayStart + used),
+      duration,
+      title: `${phase} · ${marker}并核对解题依据 · ${course.name}`,
+      type: "回顾",
+      status: "待完成",
+      reason: `${miss.missedOn.slice(5).replace("-", "/")} 练习答错，安排重练巩固`,
+      knowledge: miss.topic,
+    };
+    state.tasks.unshift(task);
+    existing.add(task.title);
+    used += duration;
+    slot += 1;
+  }
+}
+
+function startClock(totalMinutes: number): string {
+  const wrapped = ((totalMinutes % 1_440) + 1_440) % 1_440;
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
 }
 
 function collectMissedTasksInState(state: WorkspaceState): void {
@@ -1401,7 +1647,7 @@ export async function contributeSharedMaterial(input: { materialId: string; cons
   if (!profileCanUseCommunity(current)) throw new CommunityStoreError("请先完成已验证邮箱和学校配置，才能提交校内资料。", 403, "SCHOOL_VERIFICATION_REQUIRED");
   const privateMaterial = current.materials.find((item) => item.id === input.materialId);
   if (!privateMaterial) throw new CommunityStoreError("未找到要共享的私有资料。", 404, "MATERIAL_NOT_FOUND");
-  if (privateMaterial.status !== "已分析" || !current.documentAnalyses[input.materialId]) throw new CommunityStoreError("只有完成 AI 分析的资料才能提交审核。", 422, "MATERIAL_NOT_ANALYZED");
+  if ((privateMaterial.status !== "已分析" && privateMaterial.status !== "需确认") || !current.documentAnalyses[input.materialId]) throw new CommunityStoreError("只有完成 AI 分析的资料才能提交审核。", 422, "MATERIAL_NOT_ANALYZED");
   if (current.sharedMaterialRecords.some((record) => record.sha256 === privateMaterial.sha256 && ["待审核", "可解锁", "已解锁"].includes(record.status))) throw new CommunityStoreError("这份资料已经提交过，不能重复共享。", 409, "DUPLICATE_SHARE");
   const course = current.courses.find((item) => item.id === privateMaterial.courseId);
   if (!course) throw new CommunityStoreError("资料所属课程不存在。", 404, "COURSE_NOT_FOUND");
@@ -1443,7 +1689,7 @@ export async function contributeSharedMaterial(input: { materialId: string; cons
     };
     const workspace = await mutateWorkspace((state) => {
       const liveMaterial = state.materials.find((item) => item.id === input.materialId);
-      if (!liveMaterial || liveMaterial.sha256 !== privateMaterial.sha256 || liveMaterial.status !== "已分析" || !state.documentAnalyses[input.materialId]) {
+      if (!liveMaterial || liveMaterial.sha256 !== privateMaterial.sha256 || (liveMaterial.status !== "已分析" && liveMaterial.status !== "需确认") || !state.documentAnalyses[input.materialId]) {
         throw new CommunityStoreError("资料在提交期间发生变化，请刷新后重试。", 409, "MATERIAL_CHANGED");
       }
       if (state.sharedMaterialRecords.some((item) => item.sha256 === liveMaterial.sha256 && (item.status === "待审核" || ACTIVE_SHARED_STATUSES.has(item.status)))) {
@@ -1480,13 +1726,21 @@ export async function moderateSharedMaterial(input: { materialId: string; decisi
       if (!state.ledger.some((item) => item.id === idempotencyKey)) {
         const transaction: CreditTransaction = { id: idempotencyKey, label: `贡献《${record.title}》通过审核`, amount: record.credits, createdAt: now(), kind: "earn" };
         state.ledger.unshift(transaction);
-        state.profile.credits += record.credits;
       }
       appendAudit(state, "community.contribution_approved", record.id, { credits: record.credits });
     } else {
       record.status = "已拒绝";
+      const contributionKey = `contribution:${record.id}`;
+      const reversalKey = `reversal:${record.id}`;
+      if (state.ledger.some((item) => item.id === contributionKey) && !state.ledger.some((item) => item.id === reversalKey)) {
+        state.ledger.unshift({ id: reversalKey, label: `撤销《${record.title}》贡献积分`, amount: -record.credits, createdAt: now(), kind: "reversal" });
+      }
+      for (const grant of state.unlockGrants) {
+        if (grant.sharedMaterialId === record.id && !grant.revokedAt) grant.revokedAt = now();
+      }
       appendAudit(state, "community.contribution_rejected", record.id, { reason: record.moderationReason ?? "" });
     }
+    refreshCreditsFromLedger(state);
     state.sharedMaterials = state.sharedMaterials.map((item) => item.id === record.id ? publicSharedMaterial(record, state) : item);
     return clone(state);
   });
@@ -1505,11 +1759,13 @@ export async function unlockSharedMaterial(materialId: string): Promise<{ materi
     if (!ACTIVE_SHARED_STATUSES.has(record.status) || isSharedMaterialExpired(record, workspaceToday(state))) throw new CommunityStoreError("该资料尚未通过审核或已归档。", 409, "SHARE_NOT_AVAILABLE");
     if (record.school !== state.profile.school || !courseCodesForProfile(state).includes(record.courseCode)) throw new CommunityStoreError("仅同校且匹配课程的用户可解锁。", 403, "SCHOOL_SCOPE_MISMATCH");
     if (state.unlockGrants.some((grant) => grant.sharedMaterialId === materialId && !grant.revokedAt)) return clone(state);
+    refreshCreditsFromLedger(state);
     if (state.profile.credits < record.credits) throw new CommunityStoreError("积分不足。", 402, "INSUFFICIENT_CREDITS");
     const transactionId = `unlock:${state.profile.id}:${record.id}`;
     if (state.ledger.some((item) => item.id === transactionId)) return clone(state);
-    state.profile.credits -= record.credits;
     state.ledger.unshift({ id: transactionId, label: `解锁《${record.title}》`, amount: -record.credits, createdAt: now(), kind: "spend" });
+    refreshCreditsFromLedger(state);
+    if (state.profile.credits < 0) throw new CommunityStoreError("积分不足。", 402, "INSUFFICIENT_CREDITS");
     state.unlockGrants.unshift({ id: randomUUID(), sharedMaterialId: record.id, grantedAt: now() });
     record.unlocks += 1;
     appendAudit(state, "community.material_unlocked", record.id, { credits: record.credits });
@@ -1576,7 +1832,7 @@ export async function exportWorkspaceData(): Promise<WorkspaceState> {
   return getWorkspace();
 }
 
-export async function readSharedMaterialFile(materialId: string): Promise<{ material: PublicSharedMaterial; buffer: Buffer }> {
+export async function getSharedMaterialFileReference(materialId: string): Promise<{ material: PublicSharedMaterial; filePath: string; byteSize: number }> {
   await archiveExpiredSharedMaterials();
   const state = await getWorkspace();
   const record = state.sharedMaterialRecords.find((item) => item.id === materialId);
@@ -1585,12 +1841,33 @@ export async function readSharedMaterialFile(materialId: string): Promise<{ mate
   if (!publicRecord.canDownload) throw new CommunityStoreError("请先解锁这份资料。", 403, "SHARE_LOCKED");
   const safeKey = path.basename(record.objectKey);
   if (safeKey !== record.objectKey) throw new CommunityStoreError("共享资料存储键无效。", 500, "SHARE_STORAGE_INVALID");
+  const filePath = path.join(getSharedDirectory(), safeKey);
   try {
-    return { material: publicRecord, buffer: await readFile(path.join(getSharedDirectory(), safeKey)) };
+    const fileInfo = await stat(filePath);
+    if (!fileInfo.isFile()) throw new Error("shared material path is not a regular file");
+    return { material: publicRecord, filePath, byteSize: fileInfo.size };
   } catch (error) {
     if (isNodeError(error, "ENOENT")) throw new CommunityStoreError("共享资料文件不存在。", 410, "SHARE_FILE_MISSING");
     throw error;
   }
+}
+
+export async function readSharedMaterialFile(materialId: string): Promise<{ material: PublicSharedMaterial; buffer: Buffer }> {
+  const reference = await getSharedMaterialFileReference(materialId);
+  return { material: reference.material, buffer: await readFile(reference.filePath) };
+}
+
+export function createFileDownloadResponse(filePath: string, mimeType: string, filename: string, byteSize: number): Response {
+  const body = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
+  return new Response(body, {
+    headers: {
+      "Content-Type": mimeType || "application/octet-stream",
+      "Content-Length": String(byteSize),
+      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(sanitizeDownloadFilename(filename))}`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 /** Test-only utility; it intentionally acts only inside the configured data dir. */

@@ -12,9 +12,18 @@ export function initials(value: string): string {
 }
 
 export function formatExamDate(value: string): string {
-  const date = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  return `${Number(match[2])} 月 ${Number(match[3])} 日`;
+}
+
+/** 以日历日计算距考试的剩余天数；已过期为负数。 */
+export function daysUntilExam(examDate: string, today: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(examDate) || !/^\d{4}-\d{2}-\d{2}$/.test(today)) return null;
+  const start = Date.parse(`${today}T00:00:00.000Z`);
+  const end = Date.parse(`${examDate}T00:00:00.000Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.round((end - start) / 86_400_000);
 }
 
 export function formatWeekday(value: string): string {

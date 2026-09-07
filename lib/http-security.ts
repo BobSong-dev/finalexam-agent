@@ -1,5 +1,6 @@
 import "server-only";
 
+import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 
 const DEFAULT_WINDOW_MS = 60_000;
@@ -47,7 +48,10 @@ export function assertSameOrigin(request: NextRequest): void {
     return;
   }
 
-  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  // 与限流相同：未显式信任反代时，客户端可伪造的转发头一律忽略。
+  const forwardedHost = process.env.FINALE_TRUST_PROXY === "true"
+    ? request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
+    : undefined;
   const requestHost = forwardedHost || request.headers.get("host")?.trim();
   if (requestHost) {
     if (originUrl.host !== requestHost) throw new RequestSecurityError("请求来源与当前站点不一致。", 403);
@@ -101,6 +105,38 @@ export function enforceRateLimit(
     throw new RequestSecurityError("请求过于频繁，请稍后再试。", 429, retryAfterSeconds);
   }
   current.count += 1;
+}
+
+/**
+ * 拒绝跨站顶层导航触发的导出/下载（浏览器会带 sec-fetch-site: cross-site）。
+ * 无该头的 CLI/健康检查仍走 Origin 规则。
+ */
+export function assertNotCrossSite(request: NextRequest): void {
+  const site = request.headers.get("sec-fetch-site")?.trim().toLowerCase();
+  if (site === "cross-site") throw new RequestSecurityError("请求来源无效，请从应用页面重新提交。", 403);
+  assertSameOrigin(request);
+}
+
+export function timingSafeEqualText(left: string, right: string): boolean {
+  const expected = Buffer.from(left);
+  const supplied = Buffer.from(right);
+  if (expected.length !== supplied.length) {
+    if (expected.length > 0) timingSafeEqual(expected, expected);
+    return false;
+  }
+  return timingSafeEqual(expected, supplied);
+}
+
+/** 管理员 Bearer：恒定时间比较；生产环境要求 token 至少 32 字符。 */
+export function assertCommunityAdmin(request: NextRequest): void {
+  const expected = process.env.COMMUNITY_ADMIN_TOKEN?.trim() ?? "";
+  const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  if (process.env.NODE_ENV === "production" && expected.length < 32) {
+    throw new RequestSecurityError("管理员审核凭据无效或未配置。", 403);
+  }
+  if (!expected || !supplied || !timingSafeEqualText(expected, supplied)) {
+    throw new RequestSecurityError("管理员审核凭据无效或未配置。", 403);
+  }
 }
 
 export function securityErrorResponse(error: unknown): Response | undefined {

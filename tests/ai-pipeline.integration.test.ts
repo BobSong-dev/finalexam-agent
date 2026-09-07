@@ -186,11 +186,11 @@ test("AI pipeline uploads a document, reads a structured response, synthesizes, 
       value: async () => { throw new Error("Files API uploads must stream instead of buffering the whole document"); },
     });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const analysis = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
     assert.equal(analysis.documentTitle, "mock-final.pdf");
     assert.equal(analysis.keyPoints[0]?.title, "极限计算");
 
-    const synthesis = await synthesizeCourse({ course, analyses: [analysis], apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { synthesis } = await synthesizeCourse({ course, analyses: [analysis], apiKey: "test-key", model: "gpt-5-mini", baseURL });
     assert.equal(synthesis.highFrequencyPoints[0]?.frequency, 1);
 
     assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
@@ -233,7 +233,7 @@ test("AI pipeline sends inline file data when a gateway rejects streaming file u
   try {
     const file = new File([Buffer.from("%PDF-1.4 inline fallback")], "inline-fallback.pdf", { type: "application/pdf" });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const analysis = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
     assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
@@ -287,7 +287,7 @@ test("AI pipeline extracts PDF text when a gateway rejects every file-input form
     fileBytes.set(pdf);
     const file = new File([fileBytes], "text-fallback.pdf", { type: "application/pdf" });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const analysis = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
     assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
@@ -338,7 +338,7 @@ test("AI pipeline falls back to plain Chat Completions when a gateway rejects ev
     fileBytes.set(pdf);
     const file = new File([fileBytes], "chat-fallback.pdf", { type: "application/pdf" });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const analysis = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
     assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [

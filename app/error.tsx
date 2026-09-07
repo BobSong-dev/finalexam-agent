@@ -8,7 +8,7 @@ export default function Error({ error, retry }: { error: Error & { digest?: stri
         <section className="onboarding-card error">
           <p className="eyebrow">RUNTIME ERROR</p>
           <h2>页面出现错误</h2>
-          <p>{error.message || "发生了意外错误，请重试。"}</p>
+          <p>发生了意外错误，本地学习数据没有被这次失败改写。请重试；如果反复出现，请重启服务。</p>
           {error.digest && <p className="eyebrow">错误编号 {error.digest}</p>}
           <button className="primary" type="button" onClick={() => retry()}>重新加载</button>
         </section>
