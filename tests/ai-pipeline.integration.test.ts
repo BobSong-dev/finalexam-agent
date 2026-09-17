@@ -41,7 +41,12 @@ function makeTextPdf(text: string): Buffer {
     pdf += object;
   }
   const xrefOffset = Buffer.byteLength(pdf, "ascii");
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n `).join("\n")}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n `)
+    .join(
+      "\n",
+    )}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   return Buffer.from(pdf, "ascii");
 }
 
@@ -57,13 +62,15 @@ function responseEnvelope(outputText: string) {
     instructions: null,
     max_output_tokens: 6000,
     model: "gpt-5-mini",
-    output: [{
-      id: "msg_mock_1",
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: outputText, annotations: [] }],
-    }],
+    output: [
+      {
+        id: "msg_mock_1",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: outputText, annotations: [] }],
+      },
+    ],
     parallel_tool_calls: true,
     previous_response_id: null,
     reasoning: { effort: null, summary: null },
@@ -86,11 +93,13 @@ function chatCompletionEnvelope(outputText: string) {
     object: "chat.completion",
     created: 1,
     model: "gpt-5-mini",
-    choices: [{
-      index: 0,
-      message: { role: "assistant", content: outputText },
-      finish_reason: "stop",
-    }],
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: outputText },
+        finish_reason: "stop",
+      },
+    ],
     usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
   };
 }
@@ -101,43 +110,51 @@ const documentResult = {
   pageCount: 1,
   summary: "一份用于验证真实 Files 和 Responses 调用顺序的模拟试卷。",
   confidence: "high",
-  keyPoints: [{
-    id: "limit",
-    title: "极限计算",
-    importance: 5,
-    evidence: { label: "mock-final.pdf", location: "第 1 页", quote: "求极限" },
-  }],
-  questionPatterns: [{
-    title: "基础计算题",
-    type: "填空",
-    description: "直接计算一个函数极限。",
-    evidence: { label: "mock-final.pdf", location: "第 1 页", quote: "求极限" },
-  }],
+  keyPoints: [
+    {
+      id: "limit",
+      title: "极限计算",
+      importance: 5,
+      evidence: { label: "mock-final.pdf", location: "第 1 页", quote: "求极限" },
+    },
+  ],
+  questionPatterns: [
+    {
+      title: "基础计算题",
+      type: "填空",
+      description: "直接计算一个函数极限。",
+      evidence: { label: "mock-final.pdf", location: "第 1 页", quote: "求极限" },
+    },
+  ],
   studyActions: ["先复习等价无穷小，再完成三道变式题。"],
-  generatedQuestions: [{
-    id: "mock-question-1",
-    type: "填空",
-    prompt: "写出一个极限计算的关键步骤。",
-    choices: [],
-    answer: "先化简表达式。",
-    explanation: "先识别可化简的结构。",
-    knowledge: "极限计算",
-    sourceLocation: "mock-final.pdf · 第 1 页",
-  }],
+  generatedQuestions: [
+    {
+      id: "mock-question-1",
+      type: "填空",
+      prompt: "写出一个极限计算的关键步骤。",
+      choices: [],
+      answer: "先化简表达式。",
+      explanation: "先识别可化简的结构。",
+      knowledge: "极限计算",
+      sourceLocation: "mock-final.pdf · 第 1 页",
+    },
+  ],
   warnings: [],
 };
 
 const synthesisResult = {
   summary: "模拟课程汇总已完成。",
-  highFrequencyPoints: [{
-    id: "limit",
-    title: "极限计算",
-    frequency: 1,
-    mastery: 45,
-    trend: "需巩固",
-    sources: ["mock-final.pdf · 第 1 页"],
-    summary: "这份资料出现了极限计算。",
-  }],
+  highFrequencyPoints: [
+    {
+      id: "limit",
+      title: "极限计算",
+      frequency: 1,
+      mastery: 45,
+      trend: "需巩固",
+      sources: ["mock-final.pdf · 第 1 页"],
+      summary: "这份资料出现了极限计算。",
+    },
+  ],
   recommendedStudyActions: ["完成极限计算专项练习。"],
   generatedQuestions: [],
   warnings: [],
@@ -163,7 +180,10 @@ test("AI pipeline uploads a document, reads a structured response, synthesizes, 
     }
     if (request.method === "POST" && request.url === "/v1/responses") {
       const isSynthesis = body.includes("final_exam_course_synthesis");
-      sendJson(response, responseEnvelope(JSON.stringify(isSynthesis ? synthesisResult : documentResult)));
+      sendJson(
+        response,
+        responseEnvelope(JSON.stringify(isSynthesis ? synthesisResult : documentResult)),
+      );
       return;
     }
     if (request.method === "DELETE" && request.url === "/v1/files/file_mock_1") {
@@ -181,28 +201,49 @@ test("AI pipeline uploads a document, reads a structured response, synthesizes, 
   const baseURL = `http://127.0.0.1:${port}/v1`;
 
   try {
-    const file = new File([Buffer.from("%PDF-1.4 mock")], "mock-final.pdf", { type: "application/pdf" });
+    const file = new File([Buffer.from("%PDF-1.4 mock")], "mock-final.pdf", {
+      type: "application/pdf",
+    });
     Object.defineProperty(file, "arrayBuffer", {
-      value: async () => { throw new Error("Files API uploads must stream instead of buffering the whole document"); },
+      value: async () => {
+        throw new Error("Files API uploads must stream instead of buffering the whole document");
+      },
     });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({
+      file,
+      course,
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      baseURL,
+    });
     assert.equal(analysis.documentTitle, "mock-final.pdf");
     assert.equal(analysis.keyPoints[0]?.title, "极限计算");
 
-    const { synthesis } = await synthesizeCourse({ course, analyses: [analysis], apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { synthesis } = await synthesizeCourse({
+      course,
+      analyses: [analysis],
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      baseURL,
+    });
     assert.equal(synthesis.highFrequencyPoints[0]?.frequency, 1);
 
-    assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
-      "POST /v1/files",
-      "POST /v1/responses",
-      "DELETE /v1/files/file_mock_1",
-      "POST /v1/responses",
-    ]);
+    assert.deepEqual(
+      requests.map((item) => `${item.method} ${item.path}`),
+      [
+        "POST /v1/files",
+        "POST /v1/responses",
+        "DELETE /v1/files/file_mock_1",
+        "POST /v1/responses",
+      ],
+    );
     assert.match(requests[1]?.body ?? "", /file_mock_1/);
     assert.match(requests[3]?.body ?? "", /final_exam_course_synthesis/);
   } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -231,21 +272,31 @@ test("AI pipeline sends inline file data when a gateway rejects streaming file u
   const baseURL = `http://127.0.0.1:${port}/v1`;
 
   try {
-    const file = new File([Buffer.from("%PDF-1.4 inline fallback")], "inline-fallback.pdf", { type: "application/pdf" });
+    const file = new File([Buffer.from("%PDF-1.4 inline fallback")], "inline-fallback.pdf", {
+      type: "application/pdf",
+    });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({
+      file,
+      course,
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      baseURL,
+    });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
-    assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
-      "POST /v1/files",
-      "POST /v1/responses",
-    ]);
+    assert.deepEqual(
+      requests.map((item) => `${item.method} ${item.path}`),
+      ["POST /v1/files", "POST /v1/responses"],
+    );
     assert.match(requests[1]?.body ?? "", /input_file/);
     assert.match(requests[1]?.body ?? "", /file_data/);
     assert.match(requests[1]?.body ?? "", /data:application\/pdf;base64/);
     assert.doesNotMatch(requests[1]?.body ?? "", /file_mock_1/);
   } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -287,20 +338,26 @@ test("AI pipeline extracts PDF text when a gateway rejects every file-input form
     fileBytes.set(pdf);
     const file = new File([fileBytes], "text-fallback.pdf", { type: "application/pdf" });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({
+      file,
+      course,
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      baseURL,
+    });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
-    assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
-      "POST /v1/files",
-      "POST /v1/responses",
-      "POST /v1/responses",
-      "POST /v1/responses",
-    ]);
+    assert.deepEqual(
+      requests.map((item) => `${item.method} ${item.path}`),
+      ["POST /v1/files", "POST /v1/responses", "POST /v1/responses", "POST /v1/responses"],
+    );
     assert.match(requests[3]?.body ?? "", /PDF TEXT FALLBACK EVIDENCE/);
     assert.doesNotMatch(requests[3]?.body ?? "", /input_file/);
     assert.doesNotMatch(requests[3]?.body ?? "", /"text":\{"format"/);
   } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 
@@ -319,7 +376,10 @@ test("AI pipeline falls back to plain Chat Completions when a gateway rejects ev
       return;
     }
     if (request.method === "POST" && request.url === "/v1/chat/completions") {
-      sendJson(response, chatCompletionEnvelope(`\`\`\`json\n${JSON.stringify(documentResult)}\n\`\`\``));
+      sendJson(
+        response,
+        chatCompletionEnvelope(`\`\`\`json\n${JSON.stringify(documentResult)}\n\`\`\``),
+      );
       return;
     }
     sendJson(response, { error: { message: "unexpected request" } }, 404);
@@ -338,19 +398,30 @@ test("AI pipeline falls back to plain Chat Completions when a gateway rejects ev
     fileBytes.set(pdf);
     const file = new File([fileBytes], "chat-fallback.pdf", { type: "application/pdf" });
     const course = { name: "高等数学", code: "MATH201", teacher: "张老师", term: "2026 秋" };
-    const { analysis } = await analyzeDocument({ file, course, apiKey: "test-key", model: "gpt-5-mini", baseURL });
+    const { analysis } = await analyzeDocument({
+      file,
+      course,
+      apiKey: "test-key",
+      model: "gpt-5-mini",
+      baseURL,
+    });
 
     assert.equal(analysis.documentTitle, "mock-final.pdf");
-    assert.deepEqual(requests.map((item) => `${item.method} ${item.path}`), [
-      "POST /v1/files",
-      "POST /v1/responses",
-      "POST /v1/responses",
-      "POST /v1/responses",
-      "POST /v1/chat/completions",
-    ]);
+    assert.deepEqual(
+      requests.map((item) => `${item.method} ${item.path}`),
+      [
+        "POST /v1/files",
+        "POST /v1/responses",
+        "POST /v1/responses",
+        "POST /v1/responses",
+        "POST /v1/chat/completions",
+      ],
+    );
     assert.match(requests[4]?.body ?? "", /CHAT COMPLETIONS FALLBACK EVIDENCE/);
     assert.doesNotMatch(requests[4]?.body ?? "", /input_file/);
   } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });

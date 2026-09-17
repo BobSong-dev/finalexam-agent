@@ -20,15 +20,34 @@ test("health reports a writable self-hosted workspace without exposing its data 
 
   try {
     const response = await GET();
-    const payload = await response.json() as {
+    const payload = (await response.json()) as {
       ok: boolean;
       mode: string;
-      persistence: { storage: { writable: boolean; driver: string } };
+      persistence: {
+        storage: {
+          ok: boolean;
+          writable: boolean;
+          driver: string;
+          usedBytes: number;
+          quotaBytes: number;
+          materialCount: number;
+        };
+      };
+      services: {
+        processing: { mode: string; running: number; concurrency: { ai: number; upload: number } };
+      };
     };
     assert.equal(response.status, 200);
     assert.equal(payload.ok, true);
     assert.equal(payload.mode, "self-hosted-single-user");
-    assert.deepEqual(payload.persistence.storage, { ok: true, driver: "local-json-files", writable: true });
+    assert.equal(payload.persistence.storage.ok, true);
+    assert.equal(payload.persistence.storage.driver, "local-json-files");
+    assert.equal(payload.persistence.storage.writable, true);
+    assert.equal(payload.persistence.storage.usedBytes, 0);
+    assert.ok(payload.persistence.storage.quotaBytes > 0);
+    assert.equal(payload.services.processing.mode, "in-process-queue");
+    assert.equal(payload.services.processing.running, 0);
+    assert.ok(payload.services.processing.concurrency.ai >= 1);
     assert.equal(JSON.stringify(payload).includes(dataDirectory), false);
   } finally {
     if (previousDataDirectory === undefined) delete process.env.FINALE_DATA_DIR;

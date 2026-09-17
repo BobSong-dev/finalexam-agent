@@ -19,7 +19,10 @@ import { PATCH as updateTask } from "../app/api/tasks/[id]/route";
 import { GET as getPublicWorkspace } from "../app/api/workspace/route";
 
 const execFile = promisify(execFileCallback);
-const temporaryDataDirectory = path.join(os.tmpdir(), `finale-workspace-api-${process.pid}-${randomUUID()}`);
+const temporaryDataDirectory = path.join(
+  os.tmpdir(),
+  `finale-workspace-api-${process.pid}-${randomUUID()}`,
+);
 const previousDataDirectory = process.env.FINALE_DATA_DIR;
 
 process.env.FINALE_DATA_DIR = temporaryDataDirectory;
@@ -70,13 +73,15 @@ function responseEnvelope(outputText: string) {
     instructions: null,
     max_output_tokens: 6000,
     model: "gpt-5-mini",
-    output: [{
-      id: "msg_workspace_mock",
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: outputText, annotations: [] }],
-    }],
+    output: [
+      {
+        id: "msg_workspace_mock",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: outputText, annotations: [] }],
+      },
+    ],
     parallel_tool_calls: true,
     previous_response_id: null,
     reasoning: { effort: null, summary: null },
@@ -99,54 +104,72 @@ const documentAnalysis = {
   pageCount: 2,
   summary: "模拟资料反复考查二重积分的区域变换。",
   confidence: "high",
-  keyPoints: [{
-    id: "double-integral",
-    title: "二重积分的区域变换",
-    importance: 5,
-    evidence: { label: "垂直集成模拟卷.pdf", location: "第 2 页，第 3 题", quote: "先画出积分区域，再交换积分次序。" },
-  }],
-  questionPatterns: [{
-    title: "区域变换计算题",
-    type: "计算题",
-    description: "先确定积分区域边界后换序。",
-    evidence: { label: "垂直集成模拟卷.pdf", location: "第 2 页，第 3 题", quote: "交换积分次序后计算。" },
-  }],
+  keyPoints: [
+    {
+      id: "double-integral",
+      title: "二重积分的区域变换",
+      importance: 5,
+      evidence: {
+        label: "垂直集成模拟卷.pdf",
+        location: "第 2 页，第 3 题",
+        quote: "先画出积分区域，再交换积分次序。",
+      },
+    },
+  ],
+  questionPatterns: [
+    {
+      title: "区域变换计算题",
+      type: "计算题",
+      description: "先确定积分区域边界后换序。",
+      evidence: {
+        label: "垂直集成模拟卷.pdf",
+        location: "第 2 页，第 3 题",
+        quote: "交换积分次序后计算。",
+      },
+    },
+  ],
   studyActions: ["完成三道区域变换变式题。"],
-  generatedQuestions: [{
-    id: "document-question",
-    type: "单选",
-    prompt: "二重积分换序前最先应该做什么？",
-    choices: ["A. 画出积分区域", "B. 直接积分", "C. 背诵答案", "D. 跳过题目"],
-    answer: "A",
-    explanation: "区域决定新的积分限。",
-    knowledge: "二重积分的区域变换",
-    sourceLocation: "第 2 页，第 3 题",
-  }],
+  generatedQuestions: [
+    {
+      id: "document-question",
+      type: "单选",
+      prompt: "二重积分换序前最先应该做什么？",
+      choices: ["A. 画出积分区域", "B. 直接积分", "C. 背诵答案", "D. 跳过题目"],
+      answer: "A",
+      explanation: "区域决定新的积分限。",
+      knowledge: "二重积分的区域变换",
+      sourceLocation: "第 2 页，第 3 题",
+    },
+  ],
   warnings: [],
 };
 
 const courseSynthesis = {
   summary: "本课程应优先复习二重积分的区域变换。",
-  highFrequencyPoints: [{
-    id: "double-integral-course",
-    title: "二重积分的区域变换",
-    frequency: 1,
-    mastery: 35,
-    trend: "高频",
-    sources: ["垂直集成模拟卷.pdf · 第 2 页，第 3 题"],
-    summary: "上传资料中的计算题明确要求区域变换。",
-  }],
+  highFrequencyPoints: [
+    {
+      id: "double-integral-course",
+      title: "二重积分的区域变换",
+      frequency: 1,
+      mastery: 35,
+      trend: "高频",
+      sources: ["垂直集成模拟卷.pdf · 第 2 页，第 3 题"],
+      summary: "上传资料中的计算题明确要求区域变换。",
+    },
+  ],
   recommendedStudyActions: ["先画区域，再做限时计算。"],
-  generatedQuestions: [{
-    id: "course-question",
-    type: "填空",
-    prompt: "二重积分换序前应先画出积分____。",
-    choices: [],
-    answer: "区域",
-    explanation: "积分区域决定上下限。",
-    knowledge: "二重积分的区域变换",
-    sourceLocation: "课程综合 · 第 2 页",
-  }],
+  generatedQuestions: [
+    {
+      id: "course-question",
+      type: "填空",
+      prompt: "二重积分换序前应先画出积分____。",
+      choices: [],
+      answer: "区域",
+      explanation: "积分区域决定上下限。",
+      knowledge: "二重积分的区域变换",
+      sourceLocation: "课程综合 · 第 2 页",
+    },
+  ],
   warnings: [],
 };
 
@@ -170,7 +193,9 @@ async function startOpenAiCompatibleMock() {
       return;
     }
     if (record.method === "POST" && record.path === "/v1/responses") {
-      const output = record.body.includes("final_exam_course_synthesis") ? courseSynthesis : documentAnalysis;
+      const output = record.body.includes("final_exam_course_synthesis")
+        ? courseSynthesis
+        : documentAnalysis;
       sendJson(response, responseEnvelope(JSON.stringify(output)));
       return;
     }
@@ -189,7 +214,10 @@ async function startOpenAiCompatibleMock() {
   return {
     requests,
     baseUrl: `http://127.0.0.1:${port}/v1`,
-    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
   };
 }
 
@@ -222,19 +250,21 @@ async function readPersistedWorkspaceInFreshProcess() {
     'import { getWorkspace, toPublicWorkspace } from "./lib/workspace-store.ts";',
     "process.stdout.write(JSON.stringify(toPublicWorkspace(await getWorkspace())));",
   ].join("\n");
-  const { stdout, stderr } = await execFile(process.execPath, [
-    "--conditions=react-server",
-    "--import",
-    "tsx",
-    "--input-type=module",
-    "--eval",
-    program,
-  ], {
-    cwd: process.cwd(),
-    env: { ...process.env, FINALE_DATA_DIR: temporaryDataDirectory },
-  });
+  const { stdout, stderr } = await execFile(
+    process.execPath,
+    ["--conditions=react-server", "--import", "tsx", "--input-type=module", "--eval", program],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, FINALE_DATA_DIR: temporaryDataDirectory },
+    },
+  );
   assert.equal(stderr, "");
-  return JSON.parse(stdout) as { courses: Array<{ id: string; mastery: number }>; materials: Array<{ id: string; status: string }>; tasks: Array<{ id: string; status: string }>; questions: Array<{ id: string }> };
+  return JSON.parse(stdout) as {
+    courses: Array<{ id: string; mastery: number }>;
+    materials: Array<{ id: string; status: string }>;
+    tasks: Array<{ id: string; status: string }>;
+    questions: Array<{ id: string }>;
+  };
 }
 
 test("persistent API routes complete the upload-to-practice workflow against an OpenAI-compatible provider", async () => {
@@ -245,16 +275,20 @@ test("persistent API routes complete the upload-to-practice workflow against an 
   };
 
   try {
-    const courseResponse = await createCourse(jsonRequest("/api/courses", {
-      name: "高等数学（下）",
-      code: "MATH-VERTICAL-201",
-      teacher: "集成测试老师",
-      term: "2026 秋",
-      examDate: "2099-12-30",
-      priority: "高",
-    }));
+    const courseResponse = await createCourse(
+      jsonRequest("/api/courses", {
+        name: "高等数学（下）",
+        code: "MATH-VERTICAL-201",
+        teacher: "集成测试老师",
+        term: "2026 秋",
+        examDate: "2099-12-30",
+        priority: "高",
+      }),
+    );
     assert.equal(courseResponse.status, 201);
-    const coursePayload = await responseJson<{ course: { id: string }; workspace: unknown }>(courseResponse);
+    const coursePayload = await responseJson<{ course: { id: string }; workspace: unknown }>(
+      courseResponse,
+    );
     const courseId = coursePayload.course.id;
     assert.ok(courseId);
     assertNoPrivateStorageFields(coursePayload);
@@ -263,9 +297,14 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     const originalBytes = Buffer.from("%PDF-1.4\nvertical API integration material\n", "utf8");
     form.set("courseId", courseId);
     form.set("file", new File([originalBytes], "vertical.pdf", { type: "application/pdf" }));
-    const materialResponse = await createMaterial(await multipartRequest("http://localhost/api/materials", form));
+    const materialResponse = await createMaterial(
+      await multipartRequest("http://localhost/api/materials", form),
+    );
     assert.equal(materialResponse.status, 201);
-    const materialPayload = await responseJson<{ material: { id: string; status: string; objectKey?: string; sha256?: string }; workspace: unknown }>(materialResponse);
+    const materialPayload = await responseJson<{
+      material: { id: string; status: string; objectKey?: string; sha256?: string };
+      workspace: unknown;
+    }>(materialResponse);
     const materialId = materialPayload.material.id;
     assert.equal(materialPayload.material.status, "待分析");
     assert.equal(materialPayload.material.objectKey, undefined);
@@ -278,14 +317,33 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     );
     assert.equal(analysisResponse.status, 200);
     const analysisPayload = await responseJson<{
-      analysis: { keyPoints: Array<{ title: string }>; generatedQuestions: Array<{ id: string; answer: string }> };
-      workspace: { materials: Array<{ id: string; status: string }>; insights: Array<{ title: string }>; questions: Array<{ id: string; answer: string }> };
+      analysis: {
+        keyPoints: Array<{ title: string }>;
+        generatedQuestions: Array<{ id: string; answer: string }>;
+      };
+      workspace: {
+        materials: Array<{ id: string; status: string }>;
+        insights: Array<{ title: string }>;
+        questions: Array<{ id: string; answer: string }>;
+      };
     }>(analysisResponse);
     assert.equal(analysisPayload.analysis.keyPoints[0]?.title, "二重积分的区域变换");
-    assert.equal(analysisPayload.workspace.materials.find((material) => material.id === materialId)?.status, "已分析");
-    assert.equal(analysisPayload.workspace.insights.some((item) => item.title === "二重积分的区域变换"), true);
-    assert.equal(analysisPayload.analysis.generatedQuestions.some((item) => item.answer === "A"), true);
-    assert.equal(analysisPayload.workspace.questions.every((item) => !("answer" in item)), true);
+    assert.equal(
+      analysisPayload.workspace.materials.find((material) => material.id === materialId)?.status,
+      "已分析",
+    );
+    assert.equal(
+      analysisPayload.workspace.insights.some((item) => item.title === "二重积分的区域变换"),
+      true,
+    );
+    assert.equal(
+      analysisPayload.analysis.generatedQuestions.some((item) => item.answer === "A"),
+      true,
+    );
+    assert.equal(
+      analysisPayload.workspace.questions.every((item) => !("answer" in item)),
+      true,
+    );
     assertNoPrivateStorageFields(analysisPayload);
 
     const synthesisResponse = await synthesizeCourse(
@@ -295,28 +353,60 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     assert.equal(synthesisResponse.status, 200);
     const synthesisPayload = await responseJson<{
       analysis: { highFrequencyPoints: Array<{ title: string }> };
-      workspace: { questions: Array<{ id: string; answer: string }>; insights: Array<{ title: string }>; tasks: Array<{ id: string }> };
+      workspace: {
+        questions: Array<{ id: string; answer: string }>;
+        insights: Array<{ title: string }>;
+        tasks: Array<{ id: string }>;
+      };
     }>(synthesisResponse);
     assert.equal(synthesisPayload.analysis.highFrequencyPoints[0]?.title, "二重积分的区域变换");
-    assert.equal(synthesisPayload.workspace.insights.some((item) => item.title === "二重积分的区域变换"), true);
-    assert.ok(synthesisPayload.workspace.tasks[0]?.id, "course synthesis should leave a persisted study plan");
+    assert.equal(
+      synthesisPayload.workspace.insights.some((item) => item.title === "二重积分的区域变换"),
+      true,
+    );
+    assert.ok(
+      synthesisPayload.workspace.tasks[0]?.id,
+      "course synthesis should leave a persisted study plan",
+    );
     assertNoPrivateStorageFields(synthesisPayload);
 
-    const knownAnswers = [...documentAnalysis.generatedQuestions, ...courseSynthesis.generatedQuestions].map((question) => question.answer);
-    const answers = Object.fromEntries(synthesisPayload.workspace.questions.map((question, index) => [question.id, knownAnswers[index] ?? ""]));
-    const assessmentResponse = await submitAssessment(jsonRequest("/api/assessments/submit", {
-      courseId,
-      answers,
-      selfRating: 4,
-    }));
+    const knownAnswers = [
+      ...documentAnalysis.generatedQuestions,
+      ...courseSynthesis.generatedQuestions,
+    ].map((question) => question.answer);
+    const answers = Object.fromEntries(
+      synthesisPayload.workspace.questions.map((question, index) => [
+        question.id,
+        knownAnswers[index] ?? "",
+      ]),
+    );
+    const assessmentResponse = await submitAssessment(
+      jsonRequest("/api/assessments/submit", {
+        courseId,
+        answers,
+        selfRating: 4,
+      }),
+    );
     assert.equal(assessmentResponse.status, 200);
-    const assessmentPayload = await responseJson<{ correct: number; total: number; score: number; workspace: { courses: Array<{ id: string; mastery: number }>; tasks: Array<{ id: string; status: string }> } }>(assessmentResponse);
+    const assessmentPayload = await responseJson<{
+      correct: number;
+      total: number;
+      score: number;
+      workspace: {
+        courses: Array<{ id: string; mastery: number }>;
+        tasks: Array<{ id: string; status: string }>;
+      };
+    }>(assessmentResponse);
     assert.equal(assessmentPayload.correct, assessmentPayload.total);
     assert.equal(assessmentPayload.score, 100);
-    assert.ok(assessmentPayload.workspace.courses.find((course) => course.id === courseId)!.mastery > 0);
+    assert.ok(
+      assessmentPayload.workspace.courses.find((course) => course.id === courseId)!.mastery > 0,
+    );
     assertNoPrivateStorageFields(assessmentPayload);
 
-    const taskId = assessmentPayload.workspace.tasks.find((task) => task.id === synthesisPayload.workspace.tasks[0]?.id)?.id;
+    const taskId = assessmentPayload.workspace.tasks.find(
+      (task) => task.id === synthesisPayload.workspace.tasks[0]?.id,
+    )?.id;
     assert.ok(taskId);
     const taskResponse = await updateTask(
       new NextRequest(`http://localhost/api/tasks/${taskId}`, {
@@ -327,7 +417,9 @@ test("persistent API routes complete the upload-to-practice workflow against an 
       routeContext(taskId) as never,
     );
     assert.equal(taskResponse.status, 200);
-    const taskPayload = await responseJson<{ tasks: Array<{ id: string; status: string }> }>(taskResponse);
+    const taskPayload = await responseJson<{ tasks: Array<{ id: string; status: string }> }>(
+      taskResponse,
+    );
     assert.equal(taskPayload.tasks.find((task) => task.id === taskId)?.status, "已完成");
     assertNoPrivateStorageFields(taskPayload);
 
@@ -337,10 +429,15 @@ test("persistent API routes complete the upload-to-practice workflow against an 
     );
     assert.equal(downloadResponse.status, 200);
     assert.equal(downloadResponse.headers.get("content-type"), "application/pdf");
-    assert.match(downloadResponse.headers.get("content-disposition") ?? "", /attachment; filename\*=UTF-8''vertical.pdf/);
+    assert.match(
+      downloadResponse.headers.get("content-disposition") ?? "",
+      /attachment; filename\*=UTF-8''vertical.pdf/,
+    );
     assert.deepEqual(Buffer.from(await downloadResponse.arrayBuffer()), originalBytes);
 
-    const workspaceResponse = await getPublicWorkspace(new NextRequest("http://localhost/api/workspace"));
+    const workspaceResponse = await getPublicWorkspace(
+      new NextRequest("http://localhost/api/workspace"),
+    );
     assert.equal(workspaceResponse.status, 200);
     const publicWorkspace = await responseJson<{
       courses: Array<{ id: string; mastery: number }>;
@@ -348,25 +445,37 @@ test("persistent API routes complete the upload-to-practice workflow against an 
       tasks: Array<{ id: string; status: string }>;
       questions: Array<{ id: string }>;
     }>(workspaceResponse);
-    assert.equal(publicWorkspace.materials.find((material) => material.id === materialId)?.status, "已分析");
+    assert.equal(
+      publicWorkspace.materials.find((material) => material.id === materialId)?.status,
+      "已分析",
+    );
     assert.equal(publicWorkspace.tasks.find((task) => task.id === taskId)?.status, "已完成");
     assert.equal(publicWorkspace.materials[0]?.objectKey, undefined);
     assert.equal(publicWorkspace.materials[0]?.sha256, undefined);
     assertNoPrivateStorageFields(publicWorkspace);
 
     const afterRestart = await readPersistedWorkspaceInFreshProcess();
-    assert.equal(afterRestart.courses.find((course) => course.id === courseId)?.mastery, publicWorkspace.courses.find((course) => course.id === courseId)?.mastery);
-    assert.equal(afterRestart.materials.find((material) => material.id === materialId)?.status, "已分析");
+    assert.equal(
+      afterRestart.courses.find((course) => course.id === courseId)?.mastery,
+      publicWorkspace.courses.find((course) => course.id === courseId)?.mastery,
+    );
+    assert.equal(
+      afterRestart.materials.find((material) => material.id === materialId)?.status,
+      "已分析",
+    );
     assert.equal(afterRestart.tasks.find((task) => task.id === taskId)?.status, "已完成");
     assert.ok(afterRestart.questions.length >= 2);
     assertNoPrivateStorageFields(afterRestart);
 
-    assert.deepEqual(provider.requests.map((request) => `${request.method} ${request.path}`), [
-      "POST /v1/files",
-      "POST /v1/responses",
-      "DELETE /v1/files/file_workspace_mock",
-      "POST /v1/responses",
-    ]);
+    assert.deepEqual(
+      provider.requests.map((request) => `${request.method} ${request.path}`),
+      [
+        "POST /v1/files",
+        "POST /v1/responses",
+        "DELETE /v1/files/file_workspace_mock",
+        "POST /v1/responses",
+      ],
+    );
     assert.match(provider.requests[1]?.body ?? "", /file_workspace_mock/);
     assert.match(provider.requests[3]?.body ?? "", /final_exam_course_synthesis/);
   } finally {

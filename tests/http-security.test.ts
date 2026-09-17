@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NextRequest } from "next/server";
-import { RequestSecurityError, assertCommunityAdmin, assertNotCrossSite, assertSameOrigin, timingSafeEqualText } from "../lib/http-security";
+import {
+  RequestSecurityError,
+  assertCommunityAdmin,
+  assertNotCrossSite,
+  assertSameOrigin,
+  timingSafeEqualText,
+} from "../lib/http-security";
 
 test("Origin checks ignore spoofed forwarded hosts unless the proxy is trusted", () => {
   const spoofed = new NextRequest("http://localhost/api/workspace", {

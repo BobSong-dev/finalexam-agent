@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { WorkspaceStoreError, getWorkspace, storeUploadedMaterial, toPublicMaterial, toPublicWorkspace } from "@/lib/workspace-store";
+import {
+  WorkspaceStoreError,
+  getWorkspace,
+  storeUploadedMaterial,
+  toPublicMaterial,
+  toPublicWorkspace,
+} from "@/lib/workspace-store";
 import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
 import { acquireHeavyRequestSlot, runtimeCapacityErrorResponse } from "@/lib/runtime-capacity";
 
@@ -12,7 +18,10 @@ const MAX_MULTIPART_REQUEST_BYTES = 55 * 1024 * 1024;
 export async function GET() {
   try {
     const workspace = await getWorkspace();
-    return NextResponse.json({ materials: workspace.materials.map(toPublicMaterial) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { materials: workspace.materials.map(toPublicMaterial) },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     const security = securityErrorResponse(error);
     if (security) return security;
@@ -30,10 +39,17 @@ export async function POST(request: NextRequest) {
     const formData = await parseUploadForm(request);
     const courseId = formData.get("courseId");
     const file = formData.get("file");
-    if (typeof courseId !== "string" || !courseId.trim()) throw new WorkspaceStoreError("请选择要归属的课程。", 400);
+    if (typeof courseId !== "string" || !courseId.trim())
+      throw new WorkspaceStoreError("请选择要归属的课程。", 400);
     if (!(file instanceof File)) throw new WorkspaceStoreError("请从本机选择一个资料文件。", 400);
     const result = await storeUploadedMaterial(courseId.trim(), file);
-    return NextResponse.json({ material: toPublicMaterial(result.material), workspace: toPublicWorkspace(result.workspace) }, { status: 201, headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      {
+        material: toPublicMaterial(result.material),
+        workspace: toPublicWorkspace(result.workspace),
+      },
+      { status: 201, headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     const security = securityErrorResponse(error);
     if (security) return security;
@@ -68,6 +84,10 @@ async function parseUploadForm(request: NextRequest): Promise<FormData> {
 }
 
 function errorResponse(error: unknown) {
-  if (error instanceof WorkspaceStoreError) return NextResponse.json({ error: error.message }, { status: error.status });
-  return NextResponse.json({ error: "资料保存失败，请检查数据目录权限或稍后重试。" }, { status: 500 });
+  if (error instanceof WorkspaceStoreError)
+    return NextResponse.json({ error: error.message }, { status: error.status });
+  return NextResponse.json(
+    { error: "资料保存失败，请检查数据目录权限或稍后重试。" },
+    { status: 500 },
+  );
 }

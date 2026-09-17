@@ -8,6 +8,10 @@ data/
 .e2e-final-*/
 .firecrawl/
 .ui-browser-regression-data/
+playwright-report/
+test-results/
+blob-report/
+
 .env*
 !.env.example
 *.tsbuildinfo

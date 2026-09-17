@@ -1,9 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AiAnalysisError, analyzeDocument, pinCustomUpstream, resolveAiRequestConfig, resolveModel } from "@/lib/ai-analysis";
+import {
+  AiAnalysisError,
+  analyzeDocument,
+  pinCustomUpstream,
+  resolveAiRequestConfig,
+  resolveModel,
+} from "@/lib/ai-analysis";
 import { enqueueMaterialAnalysis, isAiRuntimeShuttingDown } from "@/lib/ai-jobs";
 import { assertSameOrigin, enforceRateLimit, securityErrorResponse } from "@/lib/http-security";
-import { acquireHeavyRequestSlot, runtimeCapacityErrorResponse } from "@/lib/runtime-capacity";
-import { WorkspaceStoreError, beginMaterialAnalysis, failMaterialAnalysis, getStoredMaterialFileReference, getWorkspace, saveDocumentAnalysis, toPublicWorkspace, upsertProcessingJob } from "@/lib/workspace-store";
+import { aiPool, runtimeCapacityErrorResponse } from "@/lib/runtime-capacity";
+import {
+  WorkspaceStoreError,
+  beginMaterialAnalysis,
+  failMaterialAnalysis,
+  findReusableAnalysis,
+  getStoredMaterialFileReference,
+  getWorkspace,
+  saveDocumentAnalysis,
+  saveReusedAnalysis,
+  toPublicWorkspace,
+  upsertProcessingJob,
+} from "@/lib/workspace-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,7 +31,10 @@ interface AnalysisRequest {
   background?: boolean;
 }
 
-export async function POST(request: NextRequest, context: RouteContext<"/api/materials/[id]/analyze">) {
+export async function POST(
+  request: NextRequest,
+  context: RouteContext<"/api/materials/[id]/analyze">,
+) {
   const { id } = await context.params;
   let analysisRunId: string | undefined;
   let releaseCapacity: (() => void) | undefined;
@@ -37,29 +57,70 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/mat
       requestBaseUrl,
     });
     await pinCustomUpstream(baseURL, Boolean(requestBaseUrl?.trim()));
-    const courseContext = (await getWorkspace()).courses.find((item) => item.id === material.courseId);
+    const courseContext = (await getWorkspace()).courses.find(
+      (item) => item.id === material.courseId,
+    );
     if (!courseContext) throw new WorkspaceStoreError("资料所属课程已不存在。", 404);
-    if (isAiRuntimeShuttingDown()) throw new WorkspaceStoreError("服务正在停止，请稍后重试分析。", 503);
+    if (isAiRuntimeShuttingDown())
+      throw new WorkspaceStoreError("服务正在停止，请稍后重试分析。", 503);
     const reservation = await beginMaterialAnalysis(id);
     analysisRunId = reservation.runId;
-    const coursePayload = { name: courseContext.name, code: courseContext.code, teacher: courseContext.teacher, term: courseContext.term, examDate: courseContext.examDate, priority: courseContext.priority };
+    const coursePayload = {
+      name: courseContext.name,
+      code: courseContext.code,
+      teacher: courseContext.teacher,
+      term: courseContext.term,
+      examDate: courseContext.examDate,
+      priority: courseContext.priority,
+    };
     if (body.background === true) {
-      await upsertProcessingJob({ id: `analyze:${id}`, type: "analyze", targetId: id, stage: "queued" });
-      enqueueMaterialAnalysis(id, {
-        model,
-        requestKey: request.headers.get("x-openai-api-key"),
-        requestBaseUrl,
-      }, analysisRunId);
+      await upsertProcessingJob({
+        id: `analyze:${id}`,
+        type: "analyze",
+        targetId: id,
+        stage: "queued",
+      });
+      enqueueMaterialAnalysis(
+        id,
+        {
+          model,
+          requestKey: request.headers.get("x-openai-api-key"),
+          requestBaseUrl,
+        },
+        analysisRunId,
+      );
       analysisRunId = undefined;
-      return NextResponse.json({
-        accepted: true,
-        background: true,
-        model,
-        workspace: toPublicWorkspace(await getWorkspace()),
-        notice: "分析已在后台开始，可以离开此页。完成后资料卡会更新。",
-      }, { status: 202, headers: { "Cache-Control": "no-store" } });
+      return NextResponse.json(
+        {
+          accepted: true,
+          background: true,
+          model,
+          workspace: toPublicWorkspace(await getWorkspace()),
+          notice: "分析已在后台开始，可以离开此页。完成后资料卡会更新。",
+        },
+        { status: 202, headers: { "Cache-Control": "no-store" } },
+      );
     }
-    releaseCapacity = acquireHeavyRequestSlot();
+    // 同一份文件已经分析过：直接复用，不调用模型也不消耗额度。
+    const reusable = await findReusableAnalysis(id);
+    if (
+      reusable &&
+      (await saveReusedAnalysis(id, analysisRunId, reusable.analysis, reusable.sourceName))
+    ) {
+      analysisRunId = undefined;
+      return NextResponse.json(
+        {
+          provider: "reused",
+          model,
+          analysis: reusable.analysis,
+          reusedFrom: reusable.sourceName,
+          workspace: toPublicWorkspace(await getWorkspace()),
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
+
+    releaseCapacity = aiPool().tryAcquire();
     const { analysis, usage } = await analyzeDocument({
       file: {
         name: material.name,
@@ -74,7 +135,10 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/mat
     });
     const workspace = await saveDocumentAnalysis(id, analysis, analysisRunId, usage);
     analysisRunId = undefined;
-    return NextResponse.json({ provider: "openai", model, analysis, workspace: toPublicWorkspace(workspace) }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json(
+      { provider: "openai", model, analysis, workspace: toPublicWorkspace(workspace) },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   } catch (error) {
     const security = securityErrorResponse(error);
     if (security) return security;
@@ -82,11 +146,17 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/mat
     if (capacity) return capacity;
     // Never persist a raw runtime/provider error: it can include local paths
     // or implementation details that later appear in the public workspace.
-    const message = error instanceof AiAnalysisError || error instanceof WorkspaceStoreError
-      ? error.message
-      : "AI 分析服务暂时不可用，请检查配置后重试。";
+    const message =
+      error instanceof AiAnalysisError || error instanceof WorkspaceStoreError
+        ? error.message
+        : "AI 分析服务暂时不可用，请检查配置后重试。";
     if (analysisRunId) {
-      await failMaterialAnalysis(id, analysisRunId, "AI 分析失败，可检查配置后重试。", message).catch(() => undefined);
+      await failMaterialAnalysis(
+        id,
+        analysisRunId,
+        "AI 分析失败，可检查配置后重试。",
+        message,
+      ).catch(() => undefined);
     }
     return errorResponse(error);
   } finally {
@@ -95,6 +165,10 @@ export async function POST(request: NextRequest, context: RouteContext<"/api/mat
 }
 
 function errorResponse(error: unknown) {
-  if (error instanceof AiAnalysisError || error instanceof WorkspaceStoreError) return NextResponse.json({ error: error.message }, { status: error.status });
-  return NextResponse.json({ error: "AI 分析请求无法完成，请检查请求地址、Key 和网络后重试。" }, { status: 500 });
+  if (error instanceof AiAnalysisError || error instanceof WorkspaceStoreError)
+    return NextResponse.json({ error: error.message }, { status: error.status });
+  return NextResponse.json(
+    { error: "AI 分析请求无法完成，请检查请求地址、Key 和网络后重试。" },
+    { status: 500 },
+  );
 }

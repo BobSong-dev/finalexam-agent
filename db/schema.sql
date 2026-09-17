@@ -1,4 +1,4 @@
--- Production PostgreSQL schema for Finale Agent.
+-- Production PostgreSQL schema for Finalexam Agent.
 -- Use the application service account for writes; expose only scoped views/RLS
 -- policies to authenticated clients. Shared copies deliberately have their own
 -- object key so deleting a private original does not silently alter a valid
@@ -78,9 +78,15 @@ create table knowledge_mastery (
   mastery numeric(5,2) not null default 50 check (mastery between 0 and 100),
   frequency integer not null default 0 check (frequency >= 0),
   last_practiced_at timestamptz,
+  -- 间隔复习排程（与 JSON 运行时的 knowledgeMastery 字段一一对应）。
+  interval_days smallint not null default 0 check (interval_days between 0 and 60),
+  ease numeric(3,2) not null default 0.80 check (ease between 0.30 and 1.20),
+  due_on date,
   updated_at timestamptz not null default now(),
   unique (user_id, course_id, knowledge_key)
 );
+-- 到期复习按日期取用。
+create index knowledge_mastery_due_idx on knowledge_mastery (user_id, due_on) where due_on is not null;
 
 create table study_tasks (
   id uuid primary key default gen_random_uuid(),
@@ -96,6 +102,24 @@ create table study_tasks (
   created_at timestamptz not null default now()
 );
 create index study_tasks_schedule_idx on study_tasks (user_id, scheduled_at) where status = 'pending';
+
+-- 用户对 AI 生成内容的修正：忽略考点与修正答案都保留原始分析，只覆盖展示与判分。
+create table question_answer_overrides (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  question_id text not null,
+  answer text not null check (length(answer) between 1 and 2000),
+  updated_at timestamptz not null default now(),
+  unique (user_id, question_id)
+);
+
+create table hidden_insights (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  insight_id text not null,
+  hidden_at timestamptz not null default now(),
+  unique (user_id, insight_id)
+);
 
 create table assessment_attempts (
   id uuid primary key default gen_random_uuid(),
@@ -174,6 +198,8 @@ alter table courses enable row level security;
 alter table materials enable row level security;
 alter table material_sources enable row level security;
 alter table knowledge_mastery enable row level security;
+alter table question_answer_overrides enable row level security;
+alter table hidden_insights enable row level security;
 alter table study_tasks enable row level security;
 alter table assessment_attempts enable row level security;
 alter table credit_ledger enable row level security;
@@ -182,6 +208,8 @@ alter table unlock_grants enable row level security;
 create policy course_owner_only on courses using (user_id = current_setting('app.user_id', true)::uuid);
 create policy material_owner_only on materials using (user_id = current_setting('app.user_id', true)::uuid);
 create policy mastery_owner_only on knowledge_mastery using (user_id = current_setting('app.user_id', true)::uuid);
+create policy answer_override_owner_only on question_answer_overrides using (user_id = current_setting('app.user_id', true)::uuid);
+create policy hidden_insight_owner_only on hidden_insights using (user_id = current_setting('app.user_id', true)::uuid);
 create policy task_owner_only on study_tasks using (user_id = current_setting('app.user_id', true)::uuid);
 create policy attempt_owner_only on assessment_attempts using (user_id = current_setting('app.user_id', true)::uuid);
 create policy ledger_owner_only on credit_ledger using (user_id = current_setting('app.user_id', true)::uuid);

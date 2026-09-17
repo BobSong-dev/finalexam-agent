@@ -42,6 +42,8 @@ export interface GeneratedPracticeQuestion {
   answer: string;
   explanation: string;
   knowledge: string;
+  /** 引用同一份输出里 keyPoints/highFrequencyPoints 的 id；服务端据此把题目挂到考点上。 */
+  knowledgeId?: string;
   sourceLocation: string;
   difficulty?: number;
   pitfalls?: string;
@@ -64,7 +66,8 @@ export interface CourseSynthesisPoint {
   id: string;
   title: string;
   frequency: number;
-  mastery: number;
+  /** 0–100 的复习优先度（越高越该先复习）。不是学生掌握度；旧字段名 mastery 读取时兼容。 */
+  priority: number;
   trend: "高频" | "需巩固" | "已掌握";
   sources: string[];
   summary: string;
@@ -100,6 +103,17 @@ export interface ProcessingJob {
   stage: "queued" | "extracting" | "calling-model" | "saving";
   startedAt: string;
   updatedAt: string;
+  /** 启动该任务的进程；重启后据此判断任务已经中断。 */
+  bootId?: string;
+}
+
+/** 后台任务失败记录；重启后仍然可见，避免失败被静默吞掉。 */
+export interface ProcessingFailure {
+  id: string;
+  type: "analyze" | "synthesize" | "plan";
+  targetId: string;
+  message: string;
+  at: string;
 }
 
 export interface AiStatus {

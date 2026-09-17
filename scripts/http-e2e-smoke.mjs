@@ -17,7 +17,9 @@ const providerRequests = [];
 async function prepareStandaloneRuntime() {
   // Mirror the Docker image layout: standalone contents live at /app and the
   // separately emitted static assets live at /app/.next/static.
-  await cp(path.join(projectRoot, ".next", "standalone"), standaloneRuntimeDirectory, { recursive: true });
+  await cp(path.join(projectRoot, ".next", "standalone"), standaloneRuntimeDirectory, {
+    recursive: true,
+  });
   await cp(
     path.join(projectRoot, ".next", "static"),
     path.join(standaloneRuntimeDirectory, ".next", "static"),
@@ -37,13 +39,15 @@ function outputEnvelope(outputText) {
     instructions: null,
     max_output_tokens: 6000,
     model: "gpt-5-mini",
-    output: [{
-      id: "msg_http_smoke",
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [{ type: "output_text", text: outputText, annotations: [] }],
-    }],
+    output: [
+      {
+        id: "msg_http_smoke",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: outputText, annotations: [] }],
+      },
+    ],
     parallel_tool_calls: true,
     previous_response_id: null,
     reasoning: { effort: null, summary: null },
@@ -66,54 +70,66 @@ const documentAnalysis = {
   pageCount: 1,
   summary: "Mock analysis for the full HTTP workflow.",
   confidence: "high",
-  keyPoints: [{
-    id: "limit",
-    title: "极限计算",
-    importance: 5,
-    evidence: { label: "http-smoke.pdf", location: "第 1 页", quote: "求极限" },
-  }],
-  questionPatterns: [{
-    title: "基础计算",
-    type: "填空",
-    description: "计算函数极限。",
-    evidence: { label: "http-smoke.pdf", location: "第 1 页", quote: "求极限" },
-  }],
+  keyPoints: [
+    {
+      id: "limit",
+      title: "极限计算",
+      importance: 5,
+      evidence: { label: "http-smoke.pdf", location: "第 1 页", quote: "求极限" },
+    },
+  ],
+  questionPatterns: [
+    {
+      title: "基础计算",
+      type: "填空",
+      description: "计算函数极限。",
+      evidence: { label: "http-smoke.pdf", location: "第 1 页", quote: "求极限" },
+    },
+  ],
   studyActions: ["完成三道极限计算练习。"],
-  generatedQuestions: [{
-    id: "document-q",
-    type: "填空",
-    prompt: "求极限前应先识别什么？",
-    choices: [],
-    answer: "表达式结构",
-    explanation: "先判断可化简结构。",
-    knowledge: "极限计算",
-    sourceLocation: "第 1 页",
-  }],
+  generatedQuestions: [
+    {
+      id: "document-q",
+      type: "填空",
+      prompt: "求极限前应先识别什么？",
+      choices: [],
+      answer: "表达式结构",
+      explanation: "先判断可化简结构。",
+      knowledge: "极限计算",
+      knowledgeId: "limit",
+      sourceLocation: "第 1 页",
+    },
+  ],
   warnings: [],
 };
 
 const courseSynthesis = {
   summary: "Course synthesis from the saved document analysis.",
-  highFrequencyPoints: [{
-    id: "limit-course",
-    title: "极限计算",
-    frequency: 1,
-    mastery: 35,
-    trend: "需巩固",
-    sources: ["http-smoke.pdf · 第 1 页"],
-    summary: "The supplied material tests limit calculation.",
-  }],
+  highFrequencyPoints: [
+    {
+      id: "limit-course",
+      title: "极限计算",
+      frequency: 1,
+      priority: 35,
+      trend: "需巩固",
+      sources: ["http-smoke.pdf · 第 1 页"],
+      summary: "The supplied material tests limit calculation.",
+    },
+  ],
   recommendedStudyActions: ["先化简再完成限时练习。"],
-  generatedQuestions: [{
-    id: "course-q",
-    type: "填空",
-    prompt: "极限题先识别表达式的什么？",
-    choices: [],
-    answer: "结构",
-    explanation: "结构决定化简策略。",
-    knowledge: "极限计算",
-    sourceLocation: "课程综合 · 第 1 页",
-  }],
+  generatedQuestions: [
+    {
+      id: "course-q",
+      type: "填空",
+      prompt: "极限题先识别表达式的什么？",
+      choices: [],
+      answer: "结构",
+      explanation: "结构决定化简策略。",
+      knowledge: "极限计算",
+      knowledgeId: "limit-course",
+      sourceLocation: "课程综合 · 第 1 页",
+    },
+  ],
   warnings: [],
 };
 
@@ -141,13 +157,6 @@ async function listen(server) {
   return address.port;
 }
 
-async function freePort() {
-  const server = createNetServer();
-  const port = await listen(server);
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-  return port;
-}
-
 async function applicationPort() {
   // Avoid the race inherent in reserving and then closing an ephemeral port
   // before the standalone server is spawned. A random high port is retried by
@@ -160,7 +169,9 @@ async function applicationPort() {
         probe.once("error", reject);
         probe.listen(candidate, "127.0.0.1", resolve);
       });
-      await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+      await new Promise((resolve, reject) =>
+        probe.close((error) => (error ? reject(error) : resolve())),
+      );
       return candidate;
     } catch {
       await new Promise((resolve) => probe.close(() => resolve()));
@@ -175,17 +186,41 @@ function startProvider() {
     const record = { method: request.method ?? "", path: request.url ?? "", body };
     providerRequests.push(record);
     if (record.method === "POST" && record.path === "/v1/files") {
-      return json(response, { id: "file_http_smoke", object: "file", bytes: 32, created_at: 1, filename: "http-smoke.pdf", purpose: "user_data", status: "processed" });
+      return json(response, {
+        id: "file_http_smoke",
+        object: "file",
+        bytes: 32,
+        created_at: 1,
+        filename: "http-smoke.pdf",
+        purpose: "user_data",
+        status: "processed",
+      });
     }
     if (record.method === "POST" && record.path === "/v1/responses") {
       if (body.includes("final_exam_study_plan")) {
         const date = body.match(/\\"date\\":\\"(\d{4}-\d{2}-\d{2})\\"/)?.[1] ?? "2099-12-30";
         const courseCode = body.match(/\\"code\\":\\"(HTTP-[A-Za-z0-9]+)\\"/)?.[1] ?? "UNKNOWN";
-        return json(response, outputEnvelope(JSON.stringify({
-          plan: [{ date, courseCode, type: "复习", durationMinutes: 45, focus: "极限计算", reason: "依据重要度 5/5" }],
-        })));
+        return json(
+          response,
+          outputEnvelope(
+            JSON.stringify({
+              plan: [
+                {
+                  date,
+                  courseCode,
+                  type: "复习",
+                  durationMinutes: 45,
+                  focus: "极限计算",
+                  reason: "依据重要度 5/5",
+                },
+              ],
+            }),
+          ),
+        );
       }
-      const result = body.includes("final_exam_course_synthesis") ? courseSynthesis : documentAnalysis;
+      const result = body.includes("final_exam_course_synthesis")
+        ? courseSynthesis
+        : documentAnalysis;
       return json(response, outputEnvelope(JSON.stringify(result)));
     }
     if (record.method === "DELETE" && record.path === "/v1/files/file_http_smoke") {
@@ -220,13 +255,19 @@ function startApplication(port, providerPort) {
   app.stdout.on("data", (chunk) => output.push(chunk.toString("utf8")));
   app.stderr.on("data", (chunk) => output.push(chunk.toString("utf8")));
   app.on("error", (error) => output.push(`spawn error: ${error.message}\n`));
-  app.on("exit", (code, signal) => output.push(`standalone server exited: code=${code} signal=${signal}\n`));
+  app.on("exit", (code, signal) =>
+    output.push(`standalone server exited: code=${code} signal=${signal}\n`),
+  );
   return { app, output };
 }
 
-async function waitForHealth(appUrl) {
+async function waitForHealth(appUrl, timeoutMs = 45_000) {
+  // Time-based rather than attempt-based: a cold standalone boot on Windows can
+  // take several seconds before the port is bound, and a short fixed attempt
+  // budget turns that into a spurious ECONNREFUSED failure.
+  const deadline = Date.now() + timeoutMs;
   let lastError;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  while (Date.now() < deadline) {
     try {
       const response = await fetch(`${appUrl}/api/health`);
       if (response.ok) return response;
@@ -234,7 +275,7 @@ async function waitForHealth(appUrl) {
     } catch (error) {
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw lastError ?? new Error("application did not become healthy");
 }
@@ -279,7 +320,10 @@ function expectedStaticContentType(pathname) {
 
 async function verifyHomeStaticAssets(homeHtml, appUrl) {
   const assetUrls = staticAssetUrlsFromHtml(homeHtml, appUrl);
-  assert.ok(assetUrls.length > 0, "home page must reference at least one same-origin /_next/static asset");
+  assert.ok(
+    assetUrls.length > 0,
+    "home page must reference at least one same-origin /_next/static asset",
+  );
 
   let totalBytes = 0;
   for (const assetUrl of assetUrls) {
@@ -315,69 +359,124 @@ try {
   assert.equal(healthBody.mode, "self-hosted-single-user");
   assert.equal(healthBody.services.ai.configured, true);
 
-  const course = await expectJson(await fetch(`${appUrl}/api/courses`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "HTTP 集成高数", code: `HTTP-${randomUUID().slice(0, 8)}`, teacher: "集成测试", term: "2026 秋", examDate: "2099-12-30", priority: "高" }),
-  }), 201);
+  const course = await expectJson(
+    await fetch(`${appUrl}/api/courses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "HTTP 集成高数",
+        code: `HTTP-${randomUUID().slice(0, 8)}`,
+        teacher: "集成测试",
+        term: "2026 秋",
+        examDate: "2099-12-30",
+        priority: "高",
+      }),
+    }),
+    201,
+  );
   const courseId = course.course.id;
   assert.ok(courseId);
 
   const invalidForm = new FormData();
   invalidForm.set("courseId", courseId);
   invalidForm.set("file", new Blob(["not supported"], { type: "text/plain" }), "invalid.txt");
-  assert.equal((await fetch(`${appUrl}/api/materials`, { method: "POST", body: invalidForm })).status, 415);
+  assert.equal(
+    (await fetch(`${appUrl}/api/materials`, { method: "POST", body: invalidForm })).status,
+    415,
+  );
 
   const form = new FormData();
   const originalBytes = Buffer.from("%PDF-1.4\nHTTP e2e source material\n", "utf8");
   form.set("courseId", courseId);
   form.set("file", new Blob([originalBytes], { type: "application/pdf" }), "http-smoke.pdf");
-  const uploaded = await expectJson(await fetch(`${appUrl}/api/materials`, { method: "POST", body: form }), 201);
+  const uploaded = await expectJson(
+    await fetch(`${appUrl}/api/materials`, { method: "POST", body: form }),
+    201,
+  );
   const materialId = uploaded.material.id;
   assert.equal(uploaded.material.status, "待分析");
   assert.equal(JSON.stringify(uploaded).includes("objectKey"), false);
   assert.equal(JSON.stringify(uploaded).includes("sha256"), false);
 
-  const analyzed = await expectJson(await fetch(`${appUrl}/api/materials/${materialId}/analyze`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-5-mini" }),
-  }), 200);
-  assert.equal(analyzed.workspace.materials.find((item) => item.id === materialId).status, "已分析");
+  const analyzed = await expectJson(
+    await fetch(`${appUrl}/api/materials/${materialId}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5-mini" }),
+    }),
+    200,
+  );
+  assert.equal(
+    analyzed.workspace.materials.find((item) => item.id === materialId).status,
+    "已分析",
+  );
   assert.equal(analyzed.analysis.keyPoints[0].title, "极限计算");
 
-  const synthesized = await expectJson(await fetch(`${appUrl}/api/courses/${courseId}/synthesize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "gpt-5-mini" }),
-  }), 200);
+  const synthesized = await expectJson(
+    await fetch(`${appUrl}/api/courses/${courseId}/synthesize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5-mini" }),
+    }),
+    200,
+  );
   assert.equal(synthesized.analysis.highFrequencyPoints[0].title, "极限计算");
   assert.ok(synthesized.workspace.tasks.length > 0);
 
-  const answers = Object.fromEntries(synthesized.workspace.questions.map((question) => [question.id, question.answer]));
-  const practice = await expectJson(await fetch(`${appUrl}/api/assessments/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ courseId, answers, selfRating: 4 }),
-  }), 200);
+  assert.ok(
+    synthesized.workspace.questions.every((question) => !("answer" in question)),
+    "public workspace must not leak answers",
+  );
+  const session = await expectJson(
+    await fetch(`${appUrl}/api/practice/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ courseId }),
+    }),
+    201,
+  );
+  assert.ok(session.sessionId);
+  assert.ok(session.questions.length >= 1);
+  const knownAnswers = { 表达式结构: "表达式结构", 结构: "结构" };
+  const answers = Object.fromEntries(
+    session.questions.map((question) => [
+      question.id,
+      question.prompt.includes("识别什么") ? knownAnswers["表达式结构"] : knownAnswers["结构"],
+    ]),
+  );
+  const practice = await expectJson(
+    await fetch(`${appUrl}/api/assessments/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ courseId, sessionId: session.sessionId, answers, selfRating: 4 }),
+    }),
+    200,
+  );
   assert.equal(practice.score, 100);
+  assert.equal(practice.total, session.questions.length);
   assert.ok(practice.workspace.courses.find((item) => item.id === courseId).mastery > 0);
 
   const taskId = practice.workspace.tasks[0].id;
-  const completed = await expectJson(await fetch(`${appUrl}/api/tasks/${taskId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ completed: true }),
-  }), 200);
+  const completed = await expectJson(
+    await fetch(`${appUrl}/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ completed: true }),
+    }),
+    200,
+  );
   assert.equal(completed.tasks.find((item) => item.id === taskId).status, "已完成");
 
   // The plan regeneration endpoint must genuinely call the configured
   // provider and persist the result as an AI-generated plan.
-  const aiPlan = await expectJson(await fetch(`${appUrl}/api/plan/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
-  }), 200);
+  const aiPlan = await expectJson(
+    await fetch(`${appUrl}/api/plan/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }),
+    200,
+  );
   assert.equal(aiPlan.generatedBy, "ai");
   assert.equal(aiPlan.workspace.planSource, "ai");
   assert.ok(aiPlan.workspace.tasks.length > 0, "the AI plan must leave persisted tasks");
@@ -409,10 +508,26 @@ try {
   for (const task of publicWorkspace.tasks) {
     assert.ok(["待完成", "已完成", "已错过"].includes(task.status));
   }
-  const otpUnavailable = await fetch(`${appUrl}/api/auth/otp/request`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "student@example.edu" }) });
-  assert.equal(otpUnavailable.status, 503, "email verification must report missing delivery configuration honestly");
-  const communityNotVerified = await fetch(`${appUrl}/api/shared/contribute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ materialId, consent: true, privacyConfirmed: true }) });
-  assert.equal(communityNotVerified.status, 403, "community contribution must require school verification");
+  const otpUnavailable = await fetch(`${appUrl}/api/auth/otp/request`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: "student@example.edu" }),
+  });
+  assert.equal(
+    otpUnavailable.status,
+    503,
+    "email verification must report missing delivery configuration honestly",
+  );
+  const communityNotVerified = await fetch(`${appUrl}/api/shared/contribute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ materialId, consent: true, privacyConfirmed: true }),
+  });
+  assert.equal(
+    communityNotVerified.status,
+    403,
+    "community contribution must require school verification",
+  );
   assert.equal((await fetch(`${appUrl}/api/shared/catalog`)).status, 200);
 
   await stop(app);
@@ -426,13 +541,16 @@ try {
   assert.equal(afterRestart.planSource, "ai");
   assert.ok(afterRestart.courses.find((item) => item.id === courseId).mastery > 0);
 
-  assert.deepEqual(providerRequests.map((request) => `${request.method} ${request.path}`), [
-    "POST /v1/files",
-    "POST /v1/responses",
-    "DELETE /v1/files/file_http_smoke",
-    "POST /v1/responses",
-    "POST /v1/responses",
-  ]);
+  assert.deepEqual(
+    providerRequests.map((request) => `${request.method} ${request.path}`),
+    [
+      "POST /v1/files",
+      "POST /v1/responses",
+      "DELETE /v1/files/file_http_smoke",
+      "POST /v1/responses",
+      "POST /v1/responses",
+    ],
+  );
   console.log("HTTP end-to-end smoke: passed");
 } catch (error) {
   console.error("HTTP end-to-end smoke: failed");
@@ -440,7 +558,10 @@ try {
   throw error;
 } finally {
   if (app) await stop(app);
-  if (provider) await new Promise((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+  if (provider)
+    await new Promise((resolve, reject) =>
+      provider.close((error) => (error ? reject(error) : resolve())),
+    );
   await Promise.all([
     rm(temporaryDataDirectory, { recursive: true, force: true }),
     rm(temporaryRuntimeRoot, { recursive: true, force: true }),

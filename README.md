@@ -1,10 +1,9 @@
-# 期末星图 · Finale Agent
+# 期末星图 · Finalexam Agent
 
-[![CI](https://github.com/BobSong-dev/finale-revision-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/BobSong-dev/finale-revision-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/BobSong-dev/finalexam-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/BobSong-dev/finalexam-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Next.js](https://img.shields.io/badge/Next.js-16.3.0-black.svg)](https://nextjs.org/)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-339933.svg)](https://nodejs.org/)
-
 
 面向大学生的中文复习工作区：把课程资料保存在自己控制的数据目录中，用真实 AI 提取可追溯考点、生成练习、记录掌握度并重排复习计划。
 
@@ -20,14 +19,19 @@
 - 私有资料上传、流式落盘、扩展名与文件签名校验、大小限制、SHA-256 去重、下载、删除和失败重试。
 - PDF、PPT/PPTX、DOC/DOCX、JPG、PNG、WEBP 的真实 AI 分析；支持 OpenAI Responses、Files API、Base64 文件输入以及 PDF 文本兼容 fallback。
 - 结构化 JSON Schema 校验、来源定位、警告、课程级综合、AI 临时文件清理、`store: false` 隐私设置。
-- 练习判分（包括选项文字/字母答案）、自评、掌握度更新、练习历史、证据驱动的计划重排。练习页展示最近练习记录与得分，提交后可直接“再练一次”。
+- 练习判分（单选字母/文字/选项正文、填空多答案与标点归一、简答自评）、自评、掌握度更新、练习历史、证据驱动的计划重排。练习题由会话抽取，只对本次题目判分；知识点掌握度独立持久化，重新分析资料不会重置它。
 - 重新生成计划会真实调用 AI：依据已识别考点、考试临近度与每日可用时间生成 7 天计划，服务端强制每个任务不超过当日容量；未配置 AI 时明确降级为本地排期并在响应和界面中标注，不会把算法结果伪装成 AI 输出。
 - 每日可用时间编辑；计划不会超过容量，完成状态持久化；未完成的前期任务会进入“错过的任务”记录而不是被静默丢弃。
 - 个人资料支持时区（计划窗口按学习者时区滚动）与每日计划开始时间（影响全部任务起始时刻）。
 - 个人资料保存与学校邮箱 OTP 验证。OTP 只有在真实邮件 provider 返回 2xx 后才会被标记为已发送。
 - 校内互助真实流程：提交授权与隐私确认 → 待审核 → 管理员审核（含审核队列与举报处理接口）→ 幂等积分账本 → 同校同课程解锁 → 私有下载 → 举报记录。没有审核通过的资料时目录显示为空，不展示假数据。
 - 工作区数据导出：个人资料页可下载完整 JSON 备份（含资料元数据、分析与练习记录）；上传文件本身按“数据与备份”章节方式随数据目录备份。
-- 生产安全基线：安全响应头（含 HSTS）、Origin 校验、请求限流（不信任可伪造的转发头）、上传体积前置拦截与重任务并发上限、AI 请求超时、非 root Docker（cap_drop ALL）、原子写入、健康写入探测、敏感存储字段不返回浏览器。
+- 生产安全基线：逐请求 nonce 的 CSP（`script-src` 不再使用 `unsafe-inline`）、HSTS、Origin 校验、请求限流（不信任可伪造的转发头）、上传体积前置拦截与上传/AI 分离的重任务池、AI 请求超时、非 root Docker（cap_drop ALL）、原子写入、健康写入探测、敏感存储字段不返回浏览器。
+- 长资料分块分析（按页切块 → 逐块抽取 → 合并去重），40 万字级的 PDF 不会再因为超上下文而只能得到一句笼统失败。
+- 同一份文件（SHA-256 相同）再次上传时直接复用已有分析，不重复消耗额度。
+- 间隔复习排程：答错 1 天后再练、答对逐步拉长间隔（上限 60 天），到期知识点会变成计划里的「间隔复习」任务。
+- 人工校正：可确认「需确认」的分析、忽略不可信的考点、修正题目的正确答案；工作区可整份导出与导入。
+- 深色模式与设计 token（正文最小 12px、文字对比度满足 WCAG AA，E2E 中用 axe 校验）。
 
 ## 运行边界
 
@@ -49,6 +53,9 @@ db/schema.sql        # 多用户迁移的数据库 schema 设计起点（当前�
 docs/                # 生产优化规划（单机 self-hosted）
 scripts/             # HTTP 冒烟测试与备份校验脚本
 tests/               # 单元与集成测试（node --test）
+app/hooks/           # 客户端状态：工作区、AI 会话、练习、模态框、页签选择
+app/components/      # 可复用界面组件（资料卡、题卡、上传区、侧栏等）
+tests/e2e/           # Playwright 浏览器端到端测试（含 mock provider）
 data/                # 本地数据目录（默认，已被 .gitignore 忽略）
 docker-compose.yml   # Docker 自托管编排（init-data + finale-agent）
 Dockerfile           # 非 root 多阶段镜像
@@ -67,11 +74,18 @@ npm run dev
 打开 [http://localhost:3000](http://localhost:3000)。生产验收建议使用：
 
 ```powershell
+npm run lint           # ESLint（含 React Hooks 规则）
+npm run format:check   # Prettier 格式检查
 npm run typecheck
-npm test
+npm test               # 单元与集成测试（node --test）
 npm run build
-npm run test:http
+npm run test:http      # 基于 standalone 产物的 HTTP 冒烟（自带 mock provider）
+npm run test:e2e       # Playwright 浏览器端到端（构建后运行）
 ```
+
+浏览器端到端测试使用 `tests/e2e/support/server.mjs` 启动一个固定的 mock AI provider 与 standalone 应用，
+覆盖「建课 → 上传 → 分析 → 综合 → 练习 → 计划」主链路，以及侧栏键盘可达性与 axe 可访问性检查；
+不需要任何真实密钥。
 
 ## 配置真实 AI
 
@@ -95,7 +109,12 @@ OPENAI_MODEL=gpt-5-mini
 邮箱验证码不是本地回显或固定验证码。配置一个真实的邮件 HTTP provider：它需要接受如下 JSON 并返回 2xx：
 
 ```json
-{"to":"student@example.edu","subject":"期末星图邮箱验证码","text":"...","purpose":"finale-email-verification"}
+{
+  "to": "student@example.edu",
+  "subject": "期末星图邮箱验证码",
+  "text": "...",
+  "purpose": "finale-email-verification"
+}
 ```
 
 ```dotenv
@@ -241,10 +260,17 @@ curl --fail --silent --show-error http://127.0.0.1:${PORT:-3000}/api/health
 - `POST /api/courses`、`PATCH/DELETE /api/courses/:id`：课程生命周期。
 - `POST /api/materials`、`GET/DELETE /api/materials/:id`、`GET /api/materials/:id/download`：私有资料生命周期。
 - `POST /api/materials/:id/analyze`、`POST /api/courses/:id/synthesize`：真实 AI 分析与综合。
-- `POST /api/assessments/submit`、`PATCH /api/tasks/:id`、`POST /api/plan/generate`：练习、任务和计划。`plan/generate` 在配置了 AI 时真实调用模型生成计划（响应 `generatedBy: "ai"`），未配置时按本地规则排期（`generatedBy: "schedule"`）并在界面中明确标注。
+- `POST /api/practice/sessions`、`POST /api/assessments/submit`、`PATCH /api/tasks/:id`、`POST /api/plan/generate`：练习会话、判分、任务和计划。练习会话由服务端按薄弱知识点与近期错题抽题，提交时**只对本次题目判分**（简答题需自评，未自评不计分）。`plan/generate` 在配置了 AI 时真实调用模型生成计划（响应 `generatedBy: "ai"`），未配置时按本地规则排期（`generatedBy: "schedule"`）并在界面中明确标注；传 `background: true` 时返回 202 并写回结果。
 - `POST /api/auth/otp/request`、`POST /api/auth/otp/verify`：真实邮件验证；邮件服务未配置时返回明确的 503。
 - `GET /api/shared/catalog`、`POST /api/shared/contribute`、`POST /api/shared/moderate`、`POST /api/shared/unlock`、`POST /api/shared/report`、`GET /api/shared/:id/download`：校内互助审核、积分、解锁和下载。
 - `GET /api/shared/moderation/queue`、`POST /api/shared/reports/:id/resolve`：管理员审核队列与举报处理（bearer token 保护，不进页面）。
+- `GET /api/ai/status`：当前 AI 配置状态（是否检测到服务端 Key、默认模型、自定义地址是否允许）。
+- `GET /api/jobs`：轮询用的轻量进度探针（任务阶段、失败记录与内容 signal），不返回分析内容。
+- `POST /api/workspace/import`：用导出的 JSON 整份恢复工作区；导入前自动另存 `workspace.pre-import-<时间>.json`。
+- `PATCH /api/insights/:id`：忽略/恢复一个考点（只影响展示、抽题与排期）。
+- `PATCH /api/questions/:id/answer`：修正某道题的正确答案，之后的判分与错题回顾都以修正值为准。
+- `POST /api/materials/:id/confirm`：确认标记为「需确认」的 AI 分析结果。
+- `POST /api/plan/missed`：把错过的任务作为到期复习重新排进计划（仍受每日容量限制）。
 - `GET /api/live`：轻量进程存活探针，供 Docker 使用，不访问工作区磁盘。
 - `GET /api/health`：深度读取 + 写入探测；存储不可用返回 `503`，适合作为就绪检查。
 

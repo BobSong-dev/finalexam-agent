@@ -18,7 +18,12 @@ type ModalShellProps = {
   onClose: () => void;
 };
 
-export default function ModalShell({ children, className = "", labelledBy, onClose }: ModalShellProps) {
+export default function ModalShell({
+  children,
+  className = "",
+  labelledBy,
+  onClose,
+}: ModalShellProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
 
@@ -28,14 +33,16 @@ export default function ModalShell({ children, className = "", labelledBy, onClo
 
   useEffect(() => {
     const dialog = dialogRef.current;
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousFocus =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     const animationFrame = window.requestAnimationFrame(() => {
-      const initialFocus = dialog?.querySelector<HTMLElement>("[data-modal-initial-focus]")
-        ?? dialog?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
-        ?? dialog;
+      const initialFocus =
+        dialog?.querySelector<HTMLElement>("[data-modal-initial-focus]") ??
+        dialog?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        dialog;
       initialFocus?.focus({ preventScroll: true });
     });
 
@@ -48,10 +55,12 @@ export default function ModalShell({ children, className = "", labelledBy, onClo
       }
       if (event.key !== "Tab") return;
 
-      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
-        const style = window.getComputedStyle(element);
-        return style.visibility !== "hidden" && style.display !== "none";
-      });
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+        (element) => {
+          const style = window.getComputedStyle(element);
+          return style.visibility !== "hidden" && style.display !== "none";
+        },
+      );
       if (!focusable.length) {
         event.preventDefault();
         dialog.focus();
@@ -79,10 +88,27 @@ export default function ModalShell({ children, className = "", labelledBy, onClo
     };
   }, []);
 
-  return <div className="modal-backdrop" role="presentation">
-    <section ref={dialogRef} className={`modal ${className}`.trim()} role="dialog" aria-modal="true" aria-labelledby={labelledBy} tabIndex={-1}>
-      <button className="modal-close" type="button" onClick={onClose} aria-label="关闭" data-modal-initial-focus>×</button>
-      {children}
-    </section>
-  </div>;
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        ref={dialogRef}
+        className={`modal ${className}`.trim()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        tabIndex={-1}
+      >
+        <button
+          className="modal-close"
+          type="button"
+          onClick={onClose}
+          aria-label="关闭"
+          data-modal-initial-focus
+        >
+          ×
+        </button>
+        {children}
+      </section>
+    </div>
+  );
 }

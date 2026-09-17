@@ -1,5 +1,22 @@
-import type { AiTokenUsage, CourseSynthesis, DocumentAnalysis, ProcessingJob } from "./ai-types";
-import type { Availability, Course, CreditTransaction, Insight, Material, Question, SharedMaterial, StudyTask } from "./types";
+import type {
+  AiTokenUsage,
+  CourseSynthesis,
+  DocumentAnalysis,
+  ProcessingFailure,
+  ProcessingJob,
+} from "./ai-types";
+import type {
+  Availability,
+  Course,
+  CreditTransaction,
+  Insight,
+  KnowledgeMasteryRecord,
+  Material,
+  PracticeGrade,
+  Question,
+  SharedMaterial,
+  StudyTask,
+} from "./types";
 
 /**
  * JSON-persisted workspace used by the self-hosted runtime. Object keys are
@@ -33,16 +50,42 @@ export interface WorkspaceProfile {
   aiUsage?: AiTokenUsage;
 }
 
+export interface AssessmentAttemptItem {
+  questionId: string;
+  /** 知识点键与标题快照：题目被重新生成后仍可追溯错题。 */
+  knowledgeKey: string;
+  knowledge: string;
+  prompt: string;
+  answer: string;
+  grade: PracticeGrade;
+}
+
 export interface AssessmentAttempt {
   id: string;
   courseId: string;
+  sessionId?: string;
   questionIds: string[];
   answers: Record<string, string>;
+  /** 逐题快照（v2 起）；旧记录迁移时由当时的题目补齐。 */
+  items: AssessmentAttemptItem[];
   correct: number;
   total: number;
+  /** 参与计分的题数（不含 pending 的简答）。 */
+  graded: number;
   score: number;
   selfRating?: number;
   createdAt: string;
+}
+
+/** 服务端抽好的练习题集；提交时只对会话内题目判分。 */
+export interface PracticeSession {
+  id: string;
+  courseId: string;
+  questionIds: string[];
+  knowledgeKey?: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
 }
 
 export interface AuditEvent {
@@ -56,6 +99,7 @@ export interface AuditEvent {
 /** Server-only fields for a material submitted to the local community catalog. */
 export interface StoredSharedMaterial extends SharedMaterial {
   objectKey: string;
+  byteSize?: number;
   sha256: string;
   contributorId: string;
   createdAt: string;
@@ -99,8 +143,10 @@ export interface PlanGenerationLease {
   startedAt: string;
 }
 
+export const WORKSPACE_SCHEMA_VERSION = 2;
+
 export interface WorkspaceState {
-  version: 1;
+  version: typeof WORKSPACE_SCHEMA_VERSION;
   updatedAt: string;
   /** Where the currently persisted plan came from; surfaced honestly in the UI. */
   planSource?: "ai" | "schedule";
@@ -118,6 +164,9 @@ export interface WorkspaceState {
   documentAnalyses: Record<string, DocumentAnalysis>;
   courseSyntheses: Record<string, CourseSynthesis>;
   assessmentAttempts: AssessmentAttempt[];
+  /** courseId → knowledgeKey → 练习掌握度。独立于 AI 生成的考点卡片。 */
+  knowledgeMastery: Record<string, Record<string, KnowledgeMasteryRecord>>;
+  practiceSessions: PracticeSession[];
   auditLog: AuditEvent[];
   sharedMaterialRecords: StoredSharedMaterial[];
   sharedReports: SharedReport[];
@@ -126,18 +175,41 @@ export interface WorkspaceState {
   /** Uncompleted tasks from days before the current plan window. */
   missedTasks: StudyTask[];
   processingJobs?: ProcessingJob[];
+  /** 后台任务失败记录（重启后仍可见）。 */
+  processingErrors?: ProcessingFailure[];
+  /** 用户手动忽略的考点 id；只影响展示与排期，不删除原始分析。 */
+  hiddenInsights?: string[];
+  /** 用户修正过的题目答案（questionId → 覆盖值）。 */
+  answerOverrides?: Record<string, { answer: string; updatedAt: string }>;
 }
 
-export type PublicMaterial = Omit<StoredMaterial, "objectKey" | "sha256" | "uploadedAt" | "updatedAt" | "analysisLease">;
+export type PublicMaterial = Omit<
+  StoredMaterial,
+  "objectKey" | "sha256" | "uploadedAt" | "updatedAt" | "analysisLease"
+>;
 /** 提交前不下发标准答案与解析，避免练习页被直接读穿。 */
 export type PublicQuestion = Omit<Question, "answer" | "explanation">;
 export type PracticeReveal = {
   questionId: string;
   correct: boolean;
+  grade: PracticeGrade;
   answer: string;
   explanation: string;
 };
-export type PublicWorkspaceState = Omit<WorkspaceState, "materials" | "questions" | "documentAnalyses" | "courseSyntheses" | "sharedMaterialRecords" | "sharedReports" | "unlockGrants" | "auditLog" | "otpChallenges" | "planGenerationLease"> & {
+export type PublicWorkspaceState = Omit<
+  WorkspaceState,
+  | "materials"
+  | "questions"
+  | "documentAnalyses"
+  | "courseSyntheses"
+  | "sharedMaterialRecords"
+  | "sharedReports"
+  | "unlockGrants"
+  | "auditLog"
+  | "otpChallenges"
+  | "planGenerationLease"
+  | "practiceSessions"
+> & {
   materials: PublicMaterial[];
   questions: PublicQuestion[];
   documentAnalyses: WorkspaceState["documentAnalyses"];

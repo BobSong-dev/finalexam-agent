@@ -7,7 +7,11 @@ const DEFAULT_WINDOW_MS = 60_000;
 const buckets = new Map<string, { count: number; resetAt: number }>();
 
 export class RequestSecurityError extends Error {
-  constructor(message: string, readonly status = 403, readonly retryAfterSeconds?: number) {
+  constructor(
+    message: string,
+    readonly status = 403,
+    readonly retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = "RequestSecurityError";
   }
@@ -21,7 +25,8 @@ export class RequestSecurityError extends Error {
 export function assertSameOrigin(request: NextRequest): void {
   const origin = request.headers.get("origin")?.trim();
   if (!origin || origin === "null") {
-    if (origin === "null") throw new RequestSecurityError("请求来源无效，请从应用页面重新提交。", 403);
+    if (origin === "null")
+      throw new RequestSecurityError("请求来源无效，请从应用页面重新提交。", 403);
     return;
   }
 
@@ -40,21 +45,28 @@ export function assertSameOrigin(request: NextRequest): void {
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => {
-      try { return new URL(value).origin; } catch { return ""; }
+      try {
+        return new URL(value).origin;
+      } catch {
+        return "";
+      }
     })
     .filter(Boolean);
   if (configured.length > 0) {
-    if (!configured.includes(originUrl.origin)) throw new RequestSecurityError("请求来源未获允许。", 403);
+    if (!configured.includes(originUrl.origin))
+      throw new RequestSecurityError("请求来源未获允许。", 403);
     return;
   }
 
   // 与限流相同：未显式信任反代时，客户端可伪造的转发头一律忽略。
-  const forwardedHost = process.env.FINALE_TRUST_PROXY === "true"
-    ? request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
-    : undefined;
+  const forwardedHost =
+    process.env.FINALE_TRUST_PROXY === "true"
+      ? request.headers.get("x-forwarded-host")?.split(",")[0]?.trim()
+      : undefined;
   const requestHost = forwardedHost || request.headers.get("host")?.trim();
   if (requestHost) {
-    if (originUrl.host !== requestHost) throw new RequestSecurityError("请求来源与当前站点不一致。", 403);
+    if (originUrl.host !== requestHost)
+      throw new RequestSecurityError("请求来源与当前站点不一致。", 403);
     return;
   }
 
@@ -113,7 +125,8 @@ export function enforceRateLimit(
  */
 export function assertNotCrossSite(request: NextRequest): void {
   const site = request.headers.get("sec-fetch-site")?.trim().toLowerCase();
-  if (site === "cross-site") throw new RequestSecurityError("请求来源无效，请从应用页面重新提交。", 403);
+  if (site === "cross-site")
+    throw new RequestSecurityError("请求来源无效，请从应用页面重新提交。", 403);
   assertSameOrigin(request);
 }
 
@@ -130,7 +143,11 @@ export function timingSafeEqualText(left: string, right: string): boolean {
 /** 管理员 Bearer：恒定时间比较；生产环境要求 token 至少 32 字符。 */
 export function assertCommunityAdmin(request: NextRequest): void {
   const expected = process.env.COMMUNITY_ADMIN_TOKEN?.trim() ?? "";
-  const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  const supplied =
+    request.headers
+      .get("authorization")
+      ?.replace(/^Bearer\s+/i, "")
+      .trim() ?? "";
   if (process.env.NODE_ENV === "production" && expected.length < 32) {
     throw new RequestSecurityError("管理员审核凭据无效或未配置。", 403);
   }
@@ -143,5 +160,8 @@ export function securityErrorResponse(error: unknown): Response | undefined {
   if (!(error instanceof RequestSecurityError)) return undefined;
   const headers: Record<string, string> = { "Cache-Control": "no-store" };
   if (error.retryAfterSeconds) headers["Retry-After"] = String(error.retryAfterSeconds);
-  return Response.json({ error: error.message, code: error.status === 429 ? "RATE_LIMITED" : "ORIGIN_REJECTED" }, { status: error.status, headers });
+  return Response.json(
+    { error: error.message, code: error.status === 429 ? "RATE_LIMITED" : "ORIGIN_REJECTED" },
+    { status: error.status, headers },
+  );
 }

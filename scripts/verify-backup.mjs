@@ -15,7 +15,8 @@ function fail(message) {
 function normalizeRelativePath(value, source, { allowRoot = false, directory = false } = {}) {
   if (!value || /[\u0000-\u001f\u007f]/.test(value)) fail(`${source} contains an unsafe path`);
   if (value.includes("\\")) fail(`${source} contains an ambiguous backslash path`);
-  if (value.startsWith("/") || /^[a-z]:\//i.test(value)) fail(`${source} contains an absolute path`);
+  if (value.startsWith("/") || /^[a-z]:\//i.test(value))
+    fail(`${source} contains an absolute path`);
 
   let relativePath = value;
   while (relativePath.startsWith("./")) relativePath = relativePath.slice(2);
@@ -38,7 +39,8 @@ function parseChecksumLine(raw, expectedBasename) {
   const match = /^([a-f0-9]{64})[ \t]+\*?(.+?)\s*$/i.exec(lines[0]);
   if (!match) fail("archive checksum file has an invalid sha256sum entry");
   const recordedBasename = path.posix.basename(match[2].replaceAll("\\", "/"));
-  if (recordedBasename !== expectedBasename) fail("archive checksum refers to a different backup file");
+  if (recordedBasename !== expectedBasename)
+    fail("archive checksum refers to a different backup file");
   return match[1].toLowerCase();
 }
 
@@ -49,7 +51,8 @@ function parseFileManifest(raw) {
     const match = /^([a-f0-9]{64})[ \t]+\*?(.+?)\s*$/i.exec(line);
     if (!match) fail("file manifest contains an invalid sha256sum entry");
     const recordedPath = match[2];
-    if (!recordedPath.startsWith("./")) fail("file manifest paths must be relative to the data directory");
+    if (!recordedPath.startsWith("./"))
+      fail("file manifest paths must be relative to the data directory");
     const relativePath = normalizeRelativePath(recordedPath, "file manifest");
     if (entries.has(relativePath)) fail("file manifest contains a duplicate path");
     entries.set(relativePath, match[1].toLowerCase());
@@ -130,7 +133,8 @@ class AsyncByteReader {
     while (true) {
       const chunk = await this.nextChunk();
       if (!chunk) {
-        if (this.bytesConsumed % TAR_BLOCK_BYTES !== 0) fail("tar archive has a partial trailing block");
+        if (this.bytesConsumed % TAR_BLOCK_BYTES !== 0)
+          fail("tar archive has a partial trailing block");
         return;
       }
       assertZero(chunk);
@@ -165,7 +169,8 @@ function parseTarNumber(field, label) {
   if (!text) return 0;
   if (!/^[0-7]+$/.test(text)) fail(`tar ${label} is invalid`);
   const value = Number.parseInt(text, 8);
-  if (!Number.isSafeInteger(value) || value < 0) fail(`tar ${label} is outside the supported range`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    fail(`tar ${label} is outside the supported range`);
   return value;
 }
 
@@ -179,8 +184,10 @@ function parseTarHeader(block) {
 
   const magic = block.subarray(257, 263);
   const version = block.subarray(263, 265);
-  const isPosixUstar = magic.equals(Buffer.from("ustar\0", "ascii")) && version.equals(Buffer.from("00", "ascii"));
-  const isGnuUstar = magic.equals(Buffer.from("ustar ", "ascii")) && version[0] === 0x20 && version[1] === 0;
+  const isPosixUstar =
+    magic.equals(Buffer.from("ustar\0", "ascii")) && version.equals(Buffer.from("00", "ascii"));
+  const isGnuUstar =
+    magic.equals(Buffer.from("ustar ", "ascii")) && version[0] === 0x20 && version[1] === 0;
   if (!isPosixUstar && !isGnuUstar) fail("backup archive is not a supported ustar archive");
   const name = decodeTarText(block, 0, 100, "path");
   // POSIX ustar stores a path prefix here. GNU/BusyBox headers repurpose the
@@ -207,7 +214,9 @@ function assertNoFileDirectoryCollisions(entries) {
 }
 
 function isZlibError(error) {
-  return Boolean(error && typeof error === "object" && "code" in error && /^Z_/.test(String(error.code)));
+  return Boolean(
+    error && typeof error === "object" && "code" in error && /^Z_/.test(String(error.code)),
+  );
 }
 
 async function inspectArchive(archive, expectedArchiveHash, manifest) {
@@ -245,13 +254,15 @@ async function inspectArchive(archive, expectedArchiveHash, manifest) {
       const isRegularFile = header.type === "0";
       const isDirectory = header.type === "5";
       if (header.type === "1" || header.type === "2") fail("tar archive contains a link entry");
-      if (!isRegularFile && !isDirectory) fail(`tar archive contains unsupported entry type ${JSON.stringify(header.type)}`);
+      if (!isRegularFile && !isDirectory)
+        fail(`tar archive contains unsupported entry type ${JSON.stringify(header.type)}`);
 
       const relativePath = normalizeRelativePath(header.rawPath, "tar archive", {
         allowRoot: isDirectory,
         directory: isDirectory,
       });
-      if (relativePath && archiveEntries.has(relativePath)) fail("tar archive contains a duplicate path");
+      if (relativePath && archiveEntries.has(relativePath))
+        fail("tar archive contains a duplicate path");
       if (relativePath) archiveEntries.set(relativePath, isRegularFile ? "file" : "directory");
 
       if (isDirectory) {
@@ -268,7 +279,8 @@ async function inspectArchive(archive, expectedArchiveHash, manifest) {
         if (chunk.some((byte) => byte !== 0)) fail(`tar file padding is invalid: ${relativePath}`);
       });
       const actualFileHash = fileHash.digest("hex");
-      if (actualFileHash !== expectedFileHash) fail(`file checksum does not match archive content: ${relativePath}`);
+      if (actualFileHash !== expectedFileHash)
+        fail(`file checksum does not match archive content: ${relativePath}`);
       archiveFiles.add(relativePath);
       if (relativePath === "workspace.json") workspaceBytes = header.size;
     }
@@ -300,7 +312,8 @@ async function verifyBackup(archivePath) {
   const archiveName = path.basename(archive);
   if (!/\.t(?:ar\.)?gz$/i.test(archiveName)) fail("backup archive must use .tgz or .tar.gz");
   const archiveStat = await stat(archive);
-  if (!archiveStat.isFile() || archiveStat.size === 0) fail("backup archive is empty or is not a regular file");
+  if (!archiveStat.isFile() || archiveStat.size === 0)
+    fail("backup archive is empty or is not a regular file");
 
   const checksumPath = `${archive}.sha256`;
   const manifestPath = `${archive}.files.sha256`;
@@ -321,9 +334,13 @@ if (!archiveArgument || process.argv.length > 3) {
 } else {
   try {
     const result = await verifyBackup(archiveArgument);
-    console.log(`Backup verified: ${result.archiveName} (${result.bytes} bytes, ${result.files} files, sha256 ${result.sha256})`);
+    console.log(
+      `Backup verified: ${result.archiveName} (${result.bytes} bytes, ${result.files} files, sha256 ${result.sha256})`,
+    );
   } catch (error) {
-    console.error(`Backup verification failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    console.error(
+      `Backup verification failed: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
     process.exitCode = 1;
   }
 }

@@ -42,12 +42,13 @@ function crc32(buffer: Buffer): number {
     crc ^= byte;
     for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
   }
-  return (~crc) >>> 0;
+  return ~crc >>> 0;
 }
 
 test("PPTX slides are extracted in order with page markers", () => {
   const slide1 = Buffer.from("<p:sld><a:t>极限定义</a:t></p:sld>");
   const slide2 = Buffer.from("<p:sld><a:t>夹逼定理</a:t></p:sld>");
+  void slide2;
   // Two-file zip is more than zipStore helper; extract single-slide archive.
   const archive = zipStore("ppt/slides/slide1.xml", slide1);
   const extracted = extractOfficeText("复习课件.pptx", archive);

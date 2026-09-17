@@ -1,5 +1,12 @@
 import type { AiPlanEntry } from "./ai-types";
-import type { Availability, Course, Insight, PlanRequest, RecentMissedTopic, StudyTask } from "./types";
+import type {
+  Availability,
+  Course,
+  Insight,
+  PlanRequest,
+  RecentMissedTopic,
+  StudyTask,
+} from "./types";
 
 const taskKinds: StudyTask["type"][] = ["复习", "练习", "回顾", "模拟"];
 
@@ -65,10 +72,10 @@ export function examPhaseLabel(daysLeft: number): ExamPhase {
 }
 
 const PHASE_TASK_PATTERN: Record<ExamPhase, StudyTask["type"][]> = {
-  "系统梳理": ["复习", "练习"],
-  "专项强化": ["复习", "练习", "回顾"],
-  "冲刺模拟": ["模拟", "练习", "回顾"],
-  "考前冲刺": ["模拟", "回顾", "练习"],
+  系统梳理: ["复习", "练习"],
+  专项强化: ["复习", "练习", "回顾"],
+  冲刺模拟: ["模拟", "练习", "回顾"],
+  考前冲刺: ["模拟", "回顾", "练习"],
 };
 
 function phaseTaskType(phase: ExamPhase, slotIndex: number): StudyTask["type"] {
@@ -90,16 +97,44 @@ const FIRST_PASS_ACTIVITIES = [
  * Generates a short, capacity-constrained study plan. The database version can
  * replace this pure function without changing the API contract.
  */
-export function buildAdaptivePlan({ courses, availability, insights = [], recentMisses = [], fromDate, dayStartMinutes }: PlanRequest): StudyTask[] {
-  validatePlanRequest({ courses, availability, insights, recentMisses, fromDate, dayStartMinutes });
+export function buildAdaptivePlan({
+  courses,
+  availability,
+  insights = [],
+  recentMisses = [],
+  dueTopics = [],
+  fromDate,
+  dayStartMinutes,
+}: PlanRequest): StudyTask[] {
+  validatePlanRequest({
+    courses,
+    availability,
+    insights,
+    recentMisses,
+    dueTopics,
+    fromDate,
+    dayStartMinutes,
+  });
   const dayStart = dayStartMinutes ?? DEFAULT_DAY_START_MINUTES;
-  const usableDays = availability.length > 0 ? availability : Array.from({ length: 7 }, (_, index) => ({
-    date: addDays(fromDate, index),
-    minutes: 120,
-  }));
-  const ranked = [...courses].sort((left, right) => priorityValue(right, fromDate) - priorityValue(left, fromDate));
+  const usableDays =
+    availability.length > 0
+      ? availability
+      : Array.from({ length: 7 }, (_, index) => ({
+          date: addDays(fromDate, index),
+          minutes: 120,
+        }));
+  const ranked = [...courses].sort(
+    (left, right) => priorityValue(right, fromDate) - priorityValue(left, fromDate),
+  );
   const tasks: StudyTask[] = [];
-  const missedQueues = missedQueuesByCourse(recentMisses);
+  // 错题优先于到期复习：同一知识点两者都有时只排一次（错题在前）。
+  const missedQueues = missedQueuesByCourse([
+    ...recentMisses,
+    ...dueTopics.filter(
+      (due) =>
+        !recentMisses.some((miss) => miss.courseId === due.courseId && miss.topic === due.topic),
+    ),
+  ]);
   const insightQueues = new Map<string, Insight[]>();
   for (const insight of rankedInsights(insights)) {
     const queue = insightQueues.get(insight.courseId) ?? [];
@@ -112,7 +147,16 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
     let remaining = day.minutes;
     let slotIndex = 0;
     let elapsedMinutes = 0;
-    const activeCourses = ranked.filter((course) => course.examDate >= day.date).slice(0, Math.min(3, ranked.length));
+    const activeCourses = ranked
+      .filter((course) => course.examDate >= day.date)
+      .slice(0, Math.min(3, ranked.length))
+      // 待重练的错题与到期的间隔复习是「时间敏感」的：容量紧张时先安排它们，
+      // 否则优先级更高但只是常规复习的课程会把回顾任务挤到计划之外。
+      .sort(
+        (left, right) =>
+          Number(Boolean(missedQueues.get(right.id)?.length)) -
+          Number(Boolean(missedQueues.get(left.id)?.length)),
+      );
 
     for (const course of activeCourses) {
       if (remaining < 30) break;
@@ -121,11 +165,20 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
       const daysLeft = differenceInDays(day.date, course.examDate);
       const phase = examPhaseLabel(daysLeft);
       const missed = missedQueues.get(course.id)?.shift();
+      const isDue = missed?.kind === "due";
       const type = missed ? "回顾" : phaseTaskType(phase, slotIndex);
+      const when = missed ? missed.missedOn.slice(5).replace("-", "/") : "";
       const focus = missed
-        ? { title: missed.topic, reason: `${missed.missedOn.slice(5).replace("-", "/")} 练习答错，安排重练巩固` }
+        ? {
+            title: missed.topic,
+            reason: isDue ? `${when} 到期，按间隔复习重新过一遍` : `${when} 练习答错，安排重练巩固`,
+          }
         : nextTopicForCourse(course, insightQueues.get(course.id), cursorsByCourse);
-      const action = missed ? `重练错题「${missed.topic}」并核对解题依据` : taskAction(type, focus.title, course.mastery);
+      const action = missed
+        ? isDue
+          ? `间隔复习「${missed.topic}」并自测一遍`
+          : `重练错题「${missed.topic}」并核对解题依据`
+        : taskAction(type, focus.title, course.mastery);
       tasks.push({
         id: `${day.date}-${course.id}-${slotIndex}`,
         courseId: course.id,
@@ -137,6 +190,7 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
         status: "待完成",
         reason: `${daysLeft} 天后考试 · ${focus.reason}`,
         knowledge: missed ? missed.topic : focus.title,
+        ...(isDue ? { reviewKind: "due" as const } : {}),
       });
       remaining -= duration;
       elapsedMinutes += duration;
@@ -153,7 +207,13 @@ export function buildAdaptivePlan({ courses, availability, insights = [], recent
  * unknown codes, unknown/expired dates and overflow minutes are dropped or
  * clamped so a model can never schedule beyond a day's availability.
  */
-export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], availability: Availability[], dayStartMinutes = DEFAULT_DAY_START_MINUTES, knownFocuses: ReadonlySet<string> = new Set()): StudyTask[] {
+export function materializeAiPlan(
+  entries: AiPlanEntry[],
+  courses: Course[],
+  availability: Availability[],
+  dayStartMinutes = DEFAULT_DAY_START_MINUTES,
+  knownFocuses: ReadonlySet<string> = new Set(),
+): StudyTask[] {
   const byCode = new Map(courses.map((course) => [course.code, course]));
   const capacityByDate = new Map(availability.map((day) => [day.date, day.minutes]));
   const dayState = new Map<string, { remaining: number; elapsed: number; slot: number }>();
@@ -178,7 +238,8 @@ export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], ava
       ? course.name
       : knownFocuses.size === 0 || knownFocuses.has(rawFocus)
         ? rawFocus
-        : [...knownFocuses].find((item) => rawFocus.includes(item) || item.includes(rawFocus)) ?? rawFocus;
+        : ([...knownFocuses].find((item) => rawFocus.includes(item) || item.includes(rawFocus)) ??
+          rawFocus);
     const phase = examPhaseLabel(differenceInDays(entry.date, course.examDate));
     tasks.push({
       id: `${entry.date}-${course.id}-${state.slot}`,
@@ -200,22 +261,27 @@ export function materializeAiPlan(entries: AiPlanEntry[], courses: Course[], ava
 }
 
 export function insightImportance(insight: Insight): number {
-  if (Number.isInteger(insight.importance) && insight.importance >= 1 && insight.importance <= 5) return insight.importance;
+  if (Number.isInteger(insight.importance) && insight.importance >= 1 && insight.importance <= 5)
+    return insight.importance;
   return Math.min(5, Math.max(1, insight.frequency || 1));
 }
 
 function rankedInsights(insights: Insight[]): Insight[] {
-  return [...insights].sort((left, right) =>
-    left.courseId.localeCompare(right.courseId)
-    || right.frequency - left.frequency
-    || insightImportance(right) - insightImportance(left)
-    || left.mastery - right.mastery
-    || left.title.localeCompare(right.title));
+  return [...insights].sort(
+    (left, right) =>
+      left.courseId.localeCompare(right.courseId) ||
+      right.frequency - left.frequency ||
+      insightImportance(right) - insightImportance(left) ||
+      left.mastery - right.mastery ||
+      left.title.localeCompare(right.title),
+  );
 }
 
 function missedQueuesByCourse(recentMisses: RecentMissedTopic[]): Map<string, RecentMissedTopic[]> {
   const queues = new Map<string, RecentMissedTopic[]>();
-  for (const miss of [...recentMisses].sort((left, right) => left.missedOn.localeCompare(right.missedOn))) {
+  for (const miss of [...recentMisses].sort((left, right) =>
+    left.missedOn.localeCompare(right.missedOn),
+  )) {
     const queue = queues.get(miss.courseId) ?? [];
     queue.push(miss);
     queues.set(miss.courseId, queue);
@@ -230,13 +296,20 @@ function missedQueuesByCourse(recentMisses: RecentMissedTopic[]): Map<string, Re
  * topic while alternatives remain (a rotation style borrowed from
  * spaced-repetition planners instead of a fixed daily placeholder).
  */
-function nextTopicForCourse(course: Course, queue: Insight[] | undefined, cursorsByCourse: Map<string, number>): { title: string; reason: string } {
+function nextTopicForCourse(
+  course: Course,
+  queue: Insight[] | undefined,
+  cursorsByCourse: Map<string, number>,
+): { title: string; reason: string } {
   const cursor = cursorsByCourse.get(course.id) ?? 0;
   cursorsByCourse.set(course.id, cursor + 1);
   if (queue?.length) {
     const insight = queue[cursor % queue.length]!;
     const importance = insightImportance(insight);
-    return { title: insight.title, reason: `依据「${insight.title}」· 重要度 ${importance}/5 · 出现 ${insight.frequency} 份` };
+    return {
+      title: insight.title,
+      reason: `依据「${insight.title}」· 重要度 ${importance}/5 · 出现 ${insight.frequency} 份`,
+    };
   }
   return {
     title: FIRST_PASS_ACTIVITIES[cursor % FIRST_PASS_ACTIVITIES.length]!,
@@ -260,28 +333,62 @@ function taskAction(type: StudyTask["type"], focus: string, mastery: number): st
 }
 
 export function validatePlanRequest(request: PlanRequest): void {
-  if (!request || !Array.isArray(request.courses) || request.courses.length > 100) throw new PlanValidationError("课程列表格式无效或数量过多。");
-  if (!Array.isArray(request.availability) || request.availability.length > 31) throw new PlanValidationError("可用时间列表格式无效或数量过多。");
+  if (!request || !Array.isArray(request.courses) || request.courses.length > 100)
+    throw new PlanValidationError("课程列表格式无效或数量过多。");
+  if (!Array.isArray(request.availability) || request.availability.length > 31)
+    throw new PlanValidationError("可用时间列表格式无效或数量过多。");
   if (!isValidDateOnly(request.fromDate)) throw new PlanValidationError("计划起始日期无效。");
-  if (request.dayStartMinutes !== undefined && (!Number.isInteger(request.dayStartMinutes) || request.dayStartMinutes < 0 || request.dayStartMinutes > 1_439)) throw new PlanValidationError("每日学习开始时间无效。");
+  if (
+    request.dayStartMinutes !== undefined &&
+    (!Number.isInteger(request.dayStartMinutes) ||
+      request.dayStartMinutes < 0 ||
+      request.dayStartMinutes > 1_439)
+  )
+    throw new PlanValidationError("每日学习开始时间无效。");
   for (const course of request.courses) {
-    if (!course || typeof course.id !== "string" || !course.id || !isValidDateOnly(course.examDate)) throw new PlanValidationError("课程考试日期无效。");
-    if (!Number.isFinite(course.mastery) || course.mastery < 0 || course.mastery > 100 || !Number.isFinite(course.highFrequencyWeight)) throw new PlanValidationError("课程掌握度或高频权重无效。");
+    if (!course || typeof course.id !== "string" || !course.id || !isValidDateOnly(course.examDate))
+      throw new PlanValidationError("课程考试日期无效。");
+    if (
+      !Number.isFinite(course.mastery) ||
+      course.mastery < 0 ||
+      course.mastery > 100 ||
+      !Number.isFinite(course.highFrequencyWeight)
+    )
+      throw new PlanValidationError("课程掌握度或高频权重无效。");
   }
   for (const day of request.availability) {
-    if (!day || !isValidDateOnly(day.date) || !Number.isInteger(day.minutes) || day.minutes < 0 || day.minutes > 1_440) throw new PlanValidationError("可用时间必须是有效日期和 0–1440 的整数分钟。");
+    if (
+      !day ||
+      !isValidDateOnly(day.date) ||
+      !Number.isInteger(day.minutes) ||
+      day.minutes < 0 ||
+      day.minutes > 1_440
+    )
+      throw new PlanValidationError("可用时间必须是有效日期和 0–1440 的整数分钟。");
   }
   if (request.recentMisses !== undefined) {
-    if (!Array.isArray(request.recentMisses) || request.recentMisses.length > 100) throw new PlanValidationError("错题主题列表格式无效或数量过多。");
+    if (!Array.isArray(request.recentMisses) || request.recentMisses.length > 100)
+      throw new PlanValidationError("错题主题列表格式无效或数量过多。");
     for (const miss of request.recentMisses) {
-      if (!miss || typeof miss.courseId !== "string" || !miss.courseId || typeof miss.topic !== "string" || !miss.topic.trim() || miss.topic.length > 120) throw new PlanValidationError("错题主题格式无效。");
+      if (
+        !miss ||
+        typeof miss.courseId !== "string" ||
+        !miss.courseId ||
+        typeof miss.topic !== "string" ||
+        !miss.topic.trim() ||
+        miss.topic.length > 120
+      )
+        throw new PlanValidationError("错题主题格式无效。");
       if (!isValidDateOnly(miss.missedOn)) throw new PlanValidationError("错题日期无效。");
     }
   }
 }
 
 export function isCapacityRespected(tasks: StudyTask[], availability: Availability[]): boolean {
-  return availability.every((day) => tasks
-    .filter((task) => task.date === day.date)
-    .reduce((total, task) => total + task.duration, 0) <= day.minutes);
+  return availability.every(
+    (day) =>
+      tasks
+        .filter((task) => task.date === day.date)
+        .reduce((total, task) => total + task.duration, 0) <= day.minutes,
+  );
 }

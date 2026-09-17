@@ -1,0 +1,13 @@
+.next
+node_modules
+data
+coverage
+package-lock.json
+tsconfig.tsbuildinfo
+next-env.d.ts
+docs/optimization-roadmap.md
+# CSS 仍在按视图拆分中，保持紧凑写法（阶段 4 会重写为 token 化样式）
+app/globals.css
+.claude/
+playwright-report
+test-results

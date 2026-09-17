@@ -57,6 +57,8 @@ export interface StudyTask {
   reason: string;
   /** 对应练习过滤用的知识点；没有则打开该课全部练习。 */
   knowledge?: string;
+  /** 该回顾任务的来源：错题重练，或间隔复习到期。 */
+  reviewKind?: "missed" | "due";
 }
 
 export interface Question {
@@ -69,9 +71,29 @@ export interface Question {
   explanation: string;
   source: string;
   knowledge: string;
+  /** 归一化后的知识点键，用于把题目与考点/掌握度记录连接起来（服务端派生）。 */
+  knowledgeKey?: string;
   difficulty?: number;
   pitfalls?: string;
 }
+
+/** 单个知识点的练习掌握度记录；只由练习结果驱动，AI 重新分析不会重置它。 */
+export interface KnowledgeMasteryRecord {
+  key: string;
+  title: string;
+  /** 0–100，练习结果的指数滑动平均。 */
+  mastery: number;
+  attempts: number;
+  correct: number;
+  lastPracticedAt?: string;
+  /** 间隔复习：距下次复习的天数、难度系数与到期日（YYYY-MM-DD）。 */
+  intervalDays?: number;
+  ease?: number;
+  due?: string;
+}
+
+/** 单题判定结果。简答题在没有自评/AI 评分时为 pending，不计入掌握度。 */
+export type PracticeGrade = "correct" | "partial" | "wrong" | "pending";
 
 export interface SharedMaterial {
   id: string;
@@ -118,6 +140,8 @@ export interface RecentMissedTopic {
   topic: string;
   /** Date-only string (YYYY-MM-DD) of the practice attempt that was wrong. */
   missedOn: string;
+  /** 间隔复习到期（而不是答错）产生的回顾任务；文案与排序都不同。 */
+  kind?: "missed" | "due";
 }
 
 export interface PlanRequest {
@@ -125,6 +149,8 @@ export interface PlanRequest {
   availability: Availability[];
   insights?: Insight[];
   recentMisses?: RecentMissedTopic[];
+  /** 到期该复习的知识点（间隔复习）；与错题分开传，文案不同。 */
+  dueTopics?: RecentMissedTopic[];
   fromDate: string;
   /** First study slot of the day in minutes since midnight (0–1439). */
   dayStartMinutes?: number;

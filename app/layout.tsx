@@ -24,7 +24,7 @@ const mono = DM_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "期末星图 · 复习 Agent",
+  title: "期末星图 · Finalexam Agent",
   description: "你的期末资料、计划与校内互助空间",
   robots: { index: false, follow: false },
 };

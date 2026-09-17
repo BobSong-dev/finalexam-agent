@@ -4,11 +4,11 @@ import type { Course } from "@/lib/types";
 export type View = "总览" | "学习计划" | "资料分析" | "练习测验" | "校内互助";
 
 export const VIEW_QUERY: Record<View, string> = {
-  "总览": "overview",
-  "学习计划": "plan",
-  "资料分析": "analysis",
-  "练习测验": "practice",
-  "校内互助": "community",
+  总览: "overview",
+  学习计划: "plan",
+  资料分析: "analysis",
+  练习测验: "practice",
+  校内互助: "community",
 };
 
 export const QUERY_VIEW: Record<string, View> = {
@@ -24,9 +24,14 @@ export function viewFromQuery(value: string | string[] | undefined): View {
   return (raw && QUERY_VIEW[raw]) || "总览";
 }
 
+/** “开始分析”的三种结果：已完成 / 已在后台开始 / 未能开始（需要重试）。 */
+export type AnalysisStartStatus = "done" | "started" | "failed";
+
 export type AnalysisAttempt = {
   persisted: boolean;
   analyzed: boolean;
+  /** 后台分析已开始：文件卡应关闭，进度由资料卡展示。 */
+  started?: boolean;
   materialId?: string;
 };
 

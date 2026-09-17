@@ -30,6 +30,9 @@ export async function GET(request: NextRequest) {
     const security = securityErrorResponse(error);
     if (security) return security;
     const status = error instanceof WorkspaceStoreError ? error.status : 500;
-    return Response.json({ error: error instanceof WorkspaceStoreError ? error.message : "工作区导出失败。" }, { status });
+    return Response.json(
+      { error: error instanceof WorkspaceStoreError ? error.message : "工作区导出失败。" },
+      { status },
+    );
   }
 }

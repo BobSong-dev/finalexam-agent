@@ -13,7 +13,11 @@ function localDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ view?: string | string[]; course?: string | string[] }> }) {
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ view?: string | string[]; course?: string | string[] }>;
+}) {
   let initialWorkspace: PublicWorkspaceState | null = null;
   let initialWorkspaceError = "";
   const params = await searchParams;

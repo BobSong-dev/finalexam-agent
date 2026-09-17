@@ -4,6 +4,12 @@ import { inflateRawSync } from "node:zlib";
 
 const MAX_ENTRY_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT_CHARACTERS = 400_000;
+/**
+ * 旧版 OLE（.ppt/.doc）只能靠逐字节扫描抽字符串，是纯同步 CPU 工作。
+ * 50 MB 文件会阻塞事件循环数秒，因此对兜底路径设一个更小的上限：
+ * 超过就不再抽，让上层带着明确的警告走模型侧的文件输入。
+ */
+const MAX_OLE_SCAN_BYTES = 8 * 1024 * 1024;
 
 export interface OfficeExtraction {
   kind: "pptx" | "docx" | "ole" | "unknown";
@@ -15,7 +21,10 @@ export interface OfficeExtraction {
  * 从 Office 文件抽出可供模型使用的正文。PPTX/DOCX 走 ZIP+XML；
  * 旧版 PPT/DOC（OLE）只做可读字符串兜底，不假装版式完整。
  */
-export function extractOfficeText(filename: string, bytes: Uint8Array): OfficeExtraction | undefined {
+export function extractOfficeText(
+  filename: string,
+  bytes: Uint8Array,
+): OfficeExtraction | undefined {
   const extension = /\.([a-z0-9]+)$/i.exec(filename.trim())?.[1]?.toLowerCase() ?? "";
   const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (extension === "pptx") return extractPptx(buffer);
@@ -31,11 +40,13 @@ function extractPptx(buffer: Buffer): OfficeExtraction | undefined {
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
     .sort((left, right) => slideNumber(left) - slideNumber(right));
   if (!slides.length) return undefined;
-  const pages = slides.map((name, index) => {
-    const xml = files.get(name);
-    const body = xml ? stripXml(xml.toString("utf8")) : "";
-    return `--- 第 ${index + 1} 页（幻灯片 ${slideNumber(name)}）---\n${body}`.trim();
-  }).filter((page) => page.split("\n").length > 1);
+  const pages = slides
+    .map((name, index) => {
+      const xml = files.get(name);
+      const body = xml ? stripXml(xml.toString("utf8")) : "";
+      return `--- 第 ${index + 1} 页（幻灯片 ${slideNumber(name)}）---\n${body}`.trim();
+    })
+    .filter((page) => page.split("\n").length > 1);
   const text = clipText(pages.join("\n\n"));
   if (!text) return undefined;
   return { kind: "pptx", pageCount: slides.length, text };
@@ -53,6 +64,7 @@ function extractDocx(buffer: Buffer): OfficeExtraction | undefined {
 }
 
 function extractOleStrings(buffer: Buffer, extension: "ppt" | "doc"): OfficeExtraction | undefined {
+  if (buffer.length > MAX_OLE_SCAN_BYTES) return undefined;
   const chunks: string[] = [];
   let ascii = "";
   for (let index = 0; index < buffer.length; index += 1) {
@@ -79,9 +91,15 @@ function extractOleStrings(buffer: Buffer, extension: "ppt" | "doc"): OfficeExtr
       index = cursor - 2;
     }
   }
-  const text = clipText([...new Set(chunks)].filter((item) => /[\u4e00-\u9fff]|[A-Za-z]{4,}/.test(item)).join("\n"));
+  const text = clipText(
+    [...new Set(chunks)].filter((item) => /[\u4e00-\u9fff]|[A-Za-z]{4,}/.test(item)).join("\n"),
+  );
   if (!text) return undefined;
-  return { kind: "ole", pageCount: Math.max(1, Math.ceil(text.length / 1200)), text: `以下由旧版 ${extension.toUpperCase()} 本地抽取，版式可能不完整。\n\n${text}` };
+  return {
+    kind: "ole",
+    pageCount: Math.max(1, Math.ceil(text.length / 1200)),
+    text: `以下由旧版 ${extension.toUpperCase()} 本地抽取，版式可能不完整。\n\n${text}`,
+  };
 }
 
 function slideNumber(name: string): number {
@@ -98,7 +116,7 @@ function stripXml(xml: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
+    .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&#(\d+);/g, (_, value) => String.fromCharCode(Number(value)))
     .replace(/[\t ]+/g, " ")
@@ -109,7 +127,9 @@ function stripXml(xml: string): string {
 
 function clipText(value: string): string {
   const trimmed = value.trim();
-  return trimmed.length > MAX_TEXT_CHARACTERS ? `${trimmed.slice(0, MAX_TEXT_CHARACTERS)}\n\n[正文过长，已截取前段]` : trimmed;
+  return trimmed.length > MAX_TEXT_CHARACTERS
+    ? `${trimmed.slice(0, MAX_TEXT_CHARACTERS)}\n\n[正文过长，已截取前段]`
+    : trimmed;
 }
 
 function readZip(buffer: Buffer): Map<string, Buffer> | undefined {
@@ -130,7 +150,13 @@ function readZip(buffer: Buffer): Map<string, Buffer> | undefined {
     const localOffset = buffer.readUInt32LE(offset + 42);
     const name = buffer.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
     offset += 46 + nameLength + extraLength + commentLength;
-    if (!name || name.endsWith("/") || uncompressedSize > MAX_ENTRY_BYTES || compressedSize > MAX_ENTRY_BYTES) continue;
+    if (
+      !name ||
+      name.endsWith("/") ||
+      uncompressedSize > MAX_ENTRY_BYTES ||
+      compressedSize > MAX_ENTRY_BYTES
+    )
+      continue;
     const data = readZipEntry(buffer, localOffset, method, compressedSize, uncompressedSize);
     if (data) files.set(name.replace(/\\/g, "/"), data);
   }
@@ -145,8 +171,15 @@ function findEocd(buffer: Buffer): number {
   return -1;
 }
 
-function readZipEntry(buffer: Buffer, localOffset: number, method: number, compressedSize: number, uncompressedSize: number): Buffer | undefined {
-  if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50) return undefined;
+function readZipEntry(
+  buffer: Buffer,
+  localOffset: number,
+  method: number,
+  compressedSize: number,
+  uncompressedSize: number,
+): Buffer | undefined {
+  if (localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50)
+    return undefined;
   const nameLength = buffer.readUInt16LE(localOffset + 26);
   const extraLength = buffer.readUInt16LE(localOffset + 28);
   const dataStart = localOffset + 30 + nameLength + extraLength;
@@ -155,7 +188,8 @@ function readZipEntry(buffer: Buffer, localOffset: number, method: number, compr
   const payload = buffer.subarray(dataStart, dataEnd);
   try {
     if (method === 0) return Buffer.from(payload);
-    if (method === 8) return inflateRawSync(payload, { maxOutputLength: Math.max(uncompressedSize, 1) });
+    if (method === 8)
+      return inflateRawSync(payload, { maxOutputLength: Math.max(uncompressedSize, 1) });
   } catch {
     return undefined;
   }

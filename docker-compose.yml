@@ -44,6 +44,7 @@ services:
       COMMUNITY_ADMIN_TOKEN: ${COMMUNITY_ADMIN_TOKEN:-}
       FINALE_RATE_LIMIT_DISABLED: ${FINALE_RATE_LIMIT_DISABLED:-false}
       FINALE_MAX_UPLOAD_BYTES: ${FINALE_MAX_UPLOAD_BYTES:-}
+      FINALE_AI_CONCURRENCY: ${FINALE_AI_CONCURRENCY:-1}
     volumes:
       - finale-data:/app/data
     security_opt:
@@ -53,7 +54,8 @@ services:
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
 
-  # 只读挂载数据卷，每日打一份 tar。不停止应用，适合单机崩溃一致性备份。
+  # 只读挂载数据卷，定期打一份 tar。不停止应用，适合单机崩溃一致性备份。
+  # 每次备份都会校验归档可解压且包含非空的 workspace.json，并按 FINALE_BACKUP_KEEP 清理旧备份。
   backup:
     image: alpine:3.21
     restart: unless-stopped
@@ -62,6 +64,7 @@ services:
         condition: service_started
     environment:
       BACKUP_INTERVAL_SECONDS: ${FINALE_BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_KEEP: ${FINALE_BACKUP_KEEP:-14}
     volumes:
       - finale-data:/data:ro
       - finale-backups:/backup
@@ -74,7 +77,19 @@ services:
         while true; do
           name="finale-data-$$(date -u +%Y%m%dT%H%M%SZ).tgz"
           tar -czf "/backup/$$name" -C /data .
-          echo "wrote /backup/$$name"
+          if ! tar -tzf "/backup/$$name" | grep -qx "./workspace.json"; then
+            echo "backup is missing workspace.json; keeping the archive for inspection" >&2
+          else
+            sha256sum "/backup/$$name" > "/backup/$$name.sha256"
+            echo "wrote /backup/$$name"
+          fi
+          keep="$${BACKUP_KEEP:-14}"
+          if [ "$$keep" -gt 0 ] 2>/dev/null; then
+            ls -1t /backup/finale-data-*.tgz 2>/dev/null | tail -n +$$((keep + 1)) | while IFS= read -r stale; do
+              rm -f "$$stale" "$$stale.sha256"
+              echo "pruned $$stale"
+            done
+          fi
           sleep "$${BACKUP_INTERVAL_SECONDS:-86400}"
         done
 

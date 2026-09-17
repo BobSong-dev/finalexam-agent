@@ -104,13 +104,22 @@ async function writeBackupSet(
   return archive;
 }
 
-function runVerifier(archive: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runVerifier(
+  archive: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [verifier, archive], { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [verifier, archive], {
+      cwd: projectRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
-    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
     child.once("error", reject);
     child.once("close", (code) => resolve({ code, stdout, stderr }));
   });
@@ -121,13 +130,18 @@ test("backup verifier streams a real tar.gz and checks every regular file", asyn
   const entries: TarEntry[] = [
     { name: "./", type: "5" },
     { name: "./uploads/", type: "5" },
-    { name: "./workspace.json", content: "{\"version\":1}\n" },
+    { name: "./workspace.json", content: '{"version":1}\n' },
     { name: "./uploads/example.pdf", content: "%PDF-1.4 deterministic fixture" },
   ];
   try {
     // Alpine BusyBox, used by the Compose backup command, emits GNU-flavoured
     // ustar magic. Other cases exercise the POSIX ustar variant as well.
-    const archive = await writeBackupSet(directory, "finale-data-valid.tgz", createTarGzip(entries, "gnu"), regularManifest(entries));
+    const archive = await writeBackupSet(
+      directory,
+      "finale-data-valid.tgz",
+      createTarGzip(entries, "gnu"),
+      regularManifest(entries),
+    );
     const result = await runVerifier(archive);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Backup verified:/);
@@ -142,7 +156,7 @@ test("backup verifier rejects a fake tgz even when its sidecars agree", async ()
   try {
     const fake = Buffer.from("this is not gzip or tar", "utf8");
     const archive = await writeBackupSet(directory, "finale-data-fake.tgz", fake, [
-      { path: "workspace.json", sha256: sha256("{\"version\":1}\n") },
+      { path: "workspace.json", sha256: sha256('{"version":1}\n') },
     ]);
     const result = await runVerifier(archive);
     assert.equal(result.code, 1);
@@ -155,7 +169,7 @@ test("backup verifier rejects a fake tgz even when its sidecars agree", async ()
 test("backup verifier detects archive content that no longer matches the manifest", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "finale-backup-test-"));
   const originalEntries: TarEntry[] = [
-    { name: "./workspace.json", content: "{\"version\":1}\n" },
+    { name: "./workspace.json", content: '{"version":1}\n' },
     { name: "./uploads/example.pdf", content: "%PDF-original" },
   ];
   const changedEntries: TarEntry[] = [
@@ -173,7 +187,10 @@ test("backup verifier detects archive content that no longer matches the manifes
     );
     const result = await runVerifier(archive);
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /file checksum does not match archive content: uploads\/example\.pdf/);
+    assert.match(
+      result.stderr,
+      /file checksum does not match archive content: uploads\/example\.pdf/,
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -182,15 +199,28 @@ test("backup verifier detects archive content that no longer matches the manifes
 test("backup verifier requires an exact manifest file set and a non-empty workspace", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "finale-backup-test-"));
   try {
-    const entries: TarEntry[] = [{ name: "./workspace.json", content: "{\"version\":1}\n" }];
-    const extraManifest = [...regularManifest(entries), { path: "uploads/missing.pdf", sha256: sha256("missing") }];
-    const missingArchive = await writeBackupSet(directory, "finale-data-missing.tgz", createTarGzip(entries), extraManifest);
+    const entries: TarEntry[] = [{ name: "./workspace.json", content: '{"version":1}\n' }];
+    const extraManifest = [
+      ...regularManifest(entries),
+      { path: "uploads/missing.pdf", sha256: sha256("missing") },
+    ];
+    const missingArchive = await writeBackupSet(
+      directory,
+      "finale-data-missing.tgz",
+      createTarGzip(entries),
+      extraManifest,
+    );
     const missing = await runVerifier(missingArchive);
     assert.equal(missing.code, 1);
     assert.match(missing.stderr, /file missing from the archive: uploads\/missing\.pdf/);
 
     const emptyEntries: TarEntry[] = [{ name: "./workspace.json", content: "" }];
-    const emptyArchive = await writeBackupSet(directory, "finale-data-empty.tgz", createTarGzip(emptyEntries), regularManifest(emptyEntries));
+    const emptyArchive = await writeBackupSet(
+      directory,
+      "finale-data-empty.tgz",
+      createTarGzip(emptyEntries),
+      regularManifest(emptyEntries),
+    );
     const empty = await runVerifier(emptyArchive);
     assert.equal(empty.code, 1);
     assert.match(empty.stderr, /workspace\.json is empty/);
@@ -203,7 +233,7 @@ test("backup verifier rejects unsafe paths and link entries", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "finale-backup-test-"));
   try {
     const unsafeEntries: TarEntry[] = [
-      { name: "./workspace.json", content: "{\"version\":1}\n" },
+      { name: "./workspace.json", content: '{"version":1}\n' },
       { name: "../escape.txt", content: "escape" },
     ];
     const unsafeArchive = await writeBackupSet(
@@ -217,10 +247,15 @@ test("backup verifier rejects unsafe paths and link entries", async () => {
     assert.match(unsafe.stderr, /tar archive contains an unsafe path/);
 
     const linkEntries: TarEntry[] = [
-      { name: "./workspace.json", content: "{\"version\":1}\n" },
+      { name: "./workspace.json", content: '{"version":1}\n' },
       { name: "./uploads/alias.pdf", type: "2", linkName: "../../outside" },
     ];
-    const linkArchive = await writeBackupSet(directory, "finale-data-link.tgz", createTarGzip(linkEntries), regularManifest(linkEntries));
+    const linkArchive = await writeBackupSet(
+      directory,
+      "finale-data-link.tgz",
+      createTarGzip(linkEntries),
+      regularManifest(linkEntries),
+    );
     const link = await runVerifier(linkArchive);
     assert.equal(link.code, 1);
     assert.match(link.stderr, /contains a link entry/);
@@ -244,10 +279,16 @@ test("backup documentation reuses the Compose-managed volume and keeps integrity
   assert.doesNotMatch(readme, /mkdir -p backups/);
 
   const restoreSection = readme.slice(readme.indexOf("### 恢复"), readme.indexOf("## API"));
-  const stagedExtraction = restoreSection.indexOf("tar -xzf \"$archive\" -C \"$staging\"");
-  const stagedVerification = restoreSection.indexOf("sha256sum -c \"$archive.files.sha256\"");
+  const stagedExtraction = restoreSection.indexOf('tar -xzf "$archive" -C "$staging"');
+  const stagedVerification = restoreSection.indexOf('sha256sum -c "$archive.files.sha256"');
   const destructiveReplacement = restoreSection.indexOf("find /data -mindepth 1");
   assert.ok(stagedExtraction >= 0, "restore must extract into staging");
-  assert.ok(stagedVerification > stagedExtraction, "restore must verify staged files after extraction");
-  assert.ok(destructiveReplacement > stagedVerification, "restore must not replace live data before staged verification passes");
+  assert.ok(
+    stagedVerification > stagedExtraction,
+    "restore must verify staged files after extraction",
+  );
+  assert.ok(
+    destructiveReplacement > stagedVerification,
+    "restore must not replace live data before staged verification passes",
+  );
 });
